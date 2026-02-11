@@ -77,6 +77,38 @@ jobs:
       - name: Build Windows Installers
         run: npm run tauri build -- --target x86_64-pc-windows-msvc --bundles msi,nsis
 
+      - name: Generate Updater Manifest (latest.json)
+        if: ${{ steps.release_tag.outputs.tag != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TAG="${{ steps.release_tag.outputs.tag }}"
+          BUNDLE_DIR="src-tauri/target/x86_64-pc-windows-msvc/release/bundle"
+          LATEST_JSON="$BUNDLE_DIR/latest.json"
+
+          NSIS_EXE="$(ls "$BUNDLE_DIR"/nsis/*.exe | head -n1)"
+          NSIS_SIG="${NSIS_EXE}.sig"
+
+          if [[ ! -f "$NSIS_EXE" ]]; then
+            echo "NSIS installer not found"
+            exit 1
+          fi
+          if [[ ! -f "$NSIS_SIG" ]]; then
+            echo "NSIS signature not found: $NSIS_SIG"
+            exit 1
+          fi
+
+          SIG_CONTENT="$(tr -d '\r\n' < "$NSIS_SIG")"
+          ASSET_NAME="$(basename "$NSIS_EXE")"
+          ASSET_URL="https://github.com/U-Keun/Torus/releases/download/${TAG}/${ASSET_NAME}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+          node -e 'const fs=require("fs"); const out=process.argv[1]; const version=process.argv[2]; const pubDate=process.argv[3]; const url=process.argv[4]; const sig=process.argv[5]; const body={version,notes:`Release ${version}`,pub_date:pubDate,platforms:{"windows-x86_64":{signature:sig,url}}}; fs.writeFileSync(out, JSON.stringify(body, null, 2)+"\n");' \
+            "$LATEST_JSON" "$TAG" "$PUB_DATE" "$ASSET_URL" "$SIG_CONTENT"
+
+          echo "Generated updater manifest: $LATEST_JSON"
+
       - name: Upload Workflow Artifacts
         uses: actions/upload-artifact@v4
         with:
