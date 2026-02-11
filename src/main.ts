@@ -1,4 +1,7 @@
 import "./styles.css";
+import { isTauri } from "@tauri-apps/api/core";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { check, type Update } from "@tauri-apps/plugin-updater";
 import { type Difficulty, type GameOverPayload, TorusGame } from "./game";
 import { createScoreboardStore, type ScoreEntry } from "./scoreboard";
 import { mountTorusLayout } from "./ui/layout";
@@ -19,6 +22,8 @@ const scoreboardStore = createScoreboardStore();
 const LAST_USER_STORAGE_KEY = "torus-last-user-v1";
 const DEVICE_BEST_STORAGE_KEY = "torus-device-best-v1";
 const SUBMIT_DB_PREF_STORAGE_KEY = "torus-submit-db-pref-v1";
+const LAST_UPDATE_CHECK_STORAGE_KEY = "torus-last-update-check-v1";
+const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 6;
 const PERSONAL_SUBMIT_BUTTON_LABEL = "Submit";
 const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
@@ -51,6 +56,7 @@ bindUiControls();
 bindKeyboardControls();
 bindGameOverModal();
 bindSubmitConfirmModal();
+void maybeCheckForUpdatesOnLaunch();
 
 window.addEventListener("resize", () => {
   renderer.refreshLayout();
@@ -659,4 +665,68 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
   dom.gameOverBestHintEl.textContent = best
     ? `Lower than this device best (${best.score} / Lv.${best.level}), so DB submission is disabled.`
     : "Current score is not your device best.";
+}
+
+async function maybeCheckForUpdatesOnLaunch(): Promise<void> {
+  if (import.meta.env.DEV || !isTauri()) {
+    return;
+  }
+  if (!shouldCheckForUpdatesNow()) {
+    return;
+  }
+
+  markUpdateCheckTimestamp();
+
+  let update: Update | null = null;
+  try {
+    update = await check();
+    if (!update) {
+      return;
+    }
+
+    const approved = window.confirm(
+      `A new version of Torus is available.\n\nCurrent: v${update.currentVersion}\nLatest: v${update.version}\n\nInstall now? The app will restart after installation.`,
+    );
+    if (!approved) {
+      return;
+    }
+
+    await update.downloadAndInstall();
+    window.alert(`Torus v${update.version} has been installed. The app will now restart.`);
+    await relaunch();
+  } catch (error) {
+    console.warn("Failed to check/install app updates.", error);
+  } finally {
+    if (update) {
+      try {
+        await update.close();
+      } catch {
+        // Ignore updater resource cleanup errors.
+      }
+    }
+  }
+}
+
+function shouldCheckForUpdatesNow(): boolean {
+  try {
+    const raw = window.localStorage.getItem(LAST_UPDATE_CHECK_STORAGE_KEY);
+    if (!raw) {
+      return true;
+    }
+    const lastCheckedAt = Number(raw);
+    if (!Number.isFinite(lastCheckedAt)) {
+      return true;
+    }
+    return Date.now() - lastCheckedAt >= UPDATE_CHECK_INTERVAL_MS;
+  } catch {
+    return true;
+  }
+}
+
+function markUpdateCheckTimestamp(): void {
+  try {
+    window.localStorage.setItem(LAST_UPDATE_CHECK_STORAGE_KEY, String(Date.now()));
+  } catch {
+    // Ignore storage errors and continue update checks.
+  }
 }

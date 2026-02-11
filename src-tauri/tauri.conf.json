@@ -26,8 +26,18 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "active": true,
+      "endpoints": [
+        "https://github.com/U-Keun/Torus/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQ0NzIwQ0RGODdERUMwRjcKUldUM3dONkgzd3h5Uks1RHNZa1hzZlJOclNZS1Q5MzUvQ3M5ZEh5SFFkRU5FOUJaQlVmN0FBS3MK"
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "category": "Utility",
     "targets": "all",
     "icon": [
