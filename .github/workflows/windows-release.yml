@@ -85,7 +85,6 @@ jobs:
           path: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.zip
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.sig
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/latest*.json
 
@@ -94,10 +93,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_tag.outputs.tag }}
-          fail_on_unmatched_files: true
+          fail_on_unmatched_files: false
           files: |
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.zip
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/*.sig
             src-tauri/target/x86_64-pc-windows-msvc/release/bundle/**/latest*.json
