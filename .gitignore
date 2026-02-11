@@ -7,22 +7,37 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
-node_modules
-dist
-dist-ssr
+# Dependencies / build outputs
+node_modules/
+dist/
+dist-ssr/
+coverage/
+src-tauri/target/
+src-tauri/gen/schemas/
+
+# Local env / secrets
 *.local
 .env
 .env.*
 !.env.example
 src-tauri/embedded.provisionprofile
+*.mobileprovision
+*.provisionprofile
+AuthKey_*.p8
 
-# Editor directories and files
+# Editor / IDE
 .vscode/*
 !.vscode/extensions.json
-.idea
-.DS_Store
+.idea/
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+*.orig
+
+# macOS / Xcode user data
+.DS_Store
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
