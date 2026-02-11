@@ -1,6 +1,6 @@
 [package]
 name = "torus-app"
-version = "1.0.0"
+version = "1.0.1"
 description = "Torus game desktop app"
 authors = ["u-keunsong"]
 edition = "2021"
@@ -20,3 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }

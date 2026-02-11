@@ -16,6 +16,11 @@ export interface TorusDom {
   scoreTitleEl: HTMLDivElement;
   scoreListEl: HTMLOListElement;
   personalScoreBtn: HTMLButtonElement;
+  submitPersonalBtn: HTMLButtonElement;
+  submitConfirmModalEl: HTMLDivElement;
+  submitConfirmMessageEl: HTMLParagraphElement;
+  submitConfirmConfirmBtn: HTMLButtonElement;
+  submitConfirmCancelBtn: HTMLButtonElement;
   themeChipEl: HTMLDivElement;
   newBtn: HTMLButtonElement;
   resumeBtn: HTMLButtonElement;
@@ -101,9 +106,10 @@ const APP_TEMPLATE = `
       <aside class="side-column" id="side-column">
         <section class="score-card" id="score-card">
           <div class="board-header-row">
-            <div id="score-title" class="board-header">Top 10</div>
+            <div id="score-title" class="board-header">GLOBAL TOP 10</div>
             <div class="score-actions">
               <button id="personal-score" class="mini-btn" type="button" aria-pressed="false">Personal</button>
+              <button id="submit-personal" class="mini-btn" type="button">Submit</button>
             </div>
           </div>
           <ol id="score-list" class="score-list"></ol>
@@ -130,16 +136,27 @@ const APP_TEMPLATE = `
       <div class="gameover-dialog">
         <h2 id="gameover-title">Game Over</h2>
         <p>Score <span id="gameover-score">0</span> · Level <span id="gameover-level">0</span></p>
-        <label class="gameover-label" for="gameover-name">이름</label>
-        <input id="gameover-name" maxlength="20" autocomplete="off" placeholder="이름 입력 (최대 20자)" />
+        <label class="gameover-label" for="gameover-name">Name</label>
+        <input id="gameover-name" maxlength="20" autocomplete="off" placeholder="Enter name (max 20 chars)" />
         <label class="gameover-submit" for="gameover-submit-db">
           <input id="gameover-submit-db" type="checkbox" />
-          온라인 Top10에 제출
+          Submit to online Top 10
         </label>
         <p id="gameover-best-hint" class="gameover-hint"></p>
         <div class="gameover-actions">
-          <button id="gameover-save" type="button">기록하기</button>
-          <button id="gameover-skip" type="button">건너뛰기</button>
+          <button id="gameover-save" type="button">Save</button>
+          <button id="gameover-skip" type="button">Skip</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="submit-confirm-modal" class="gameover-modal hidden" role="dialog" aria-modal="true" aria-labelledby="submit-confirm-title">
+      <div class="gameover-dialog submit-confirm-dialog">
+        <h2 id="submit-confirm-title">Submit Score</h2>
+        <p id="submit-confirm-message" class="submit-confirm-message">Checking your personal best record...</p>
+        <div class="gameover-actions">
+          <button id="submit-confirm-cancel" type="button">Cancel</button>
+          <button id="submit-confirm-ok" type="button" disabled>Submit</button>
         </div>
       </div>
     </div>
@@ -167,6 +184,11 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     scoreTitleEl: must<HTMLDivElement>(container, "#score-title"),
     scoreListEl: must<HTMLOListElement>(container, "#score-list"),
     personalScoreBtn: must<HTMLButtonElement>(container, "#personal-score"),
+    submitPersonalBtn: must<HTMLButtonElement>(container, "#submit-personal"),
+    submitConfirmModalEl: must<HTMLDivElement>(container, "#submit-confirm-modal"),
+    submitConfirmMessageEl: must<HTMLParagraphElement>(container, "#submit-confirm-message"),
+    submitConfirmConfirmBtn: must<HTMLButtonElement>(container, "#submit-confirm-ok"),
+    submitConfirmCancelBtn: must<HTMLButtonElement>(container, "#submit-confirm-cancel"),
     themeChipEl: must<HTMLDivElement>(container, "#theme-chip"),
     newBtn: must<HTMLButtonElement>(container, "#new-game"),
     resumeBtn: must<HTMLButtonElement>(container, "#resume-game"),

@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { invoke } from "@tauri-apps/api/core";
 
 export interface ScoreEntry {
   user: string;
@@ -12,13 +12,6 @@ export interface ScoreboardStore {
   add(entry: ScoreEntry): Promise<void>;
   topPersonal(limit?: number): Promise<ScoreEntry[]>;
   addPersonal(entry: ScoreEntry): Promise<void>;
-}
-
-interface ScoreRow {
-  player_name: string;
-  score: number;
-  level: number;
-  created_at: string;
 }
 
 class LocalEntryStore {
@@ -131,41 +124,33 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
   }
 }
 
-class SupabaseScoreboardStore implements ScoreboardStore {
+class TauriScoreboardStore implements ScoreboardStore {
   constructor(
-    private readonly client: SupabaseClient,
     private readonly globalStore: LocalEntryStore,
     private readonly personalStore: LocalEntryStore,
-    private readonly table = "scores",
+    private readonly supabaseUrl: string,
+    private readonly supabaseAnonKey: string,
   ) {}
 
   public async top(limit = 10): Promise<ScoreEntry[]> {
     try {
-      const { data, error } = await this.client
-        .from(this.table)
-        .select("player_name, score, level, created_at")
-        .order("score", { ascending: false })
-        .order("level", { ascending: false })
-        .order("created_at", { ascending: false })
-        .limit(limit);
-
-      if (error || !Array.isArray(data)) {
-        console.warn("Failed to load scores from Supabase. Using local cache.", error);
-        return this.globalStore.top(limit);
-      }
-
-      const mapped = data
-        .filter((row): row is ScoreRow => this.isScoreRow(row))
-        .map((row) => ({
-          user: row.player_name,
-          score: row.score,
-          level: row.level,
-          date: row.created_at,
+      const rows = await invoke<ScoreEntry[]>("fetch_global_scores", {
+        limit,
+        supabaseUrl: this.supabaseUrl || null,
+        supabaseAnonKey: this.supabaseAnonKey || null,
+      });
+      const mapped = rows
+        .filter((entry): entry is ScoreEntry => this.isScoreEntry(entry))
+        .map((entry) => ({
+          user: entry.user,
+          score: entry.score,
+          level: entry.level,
+          date: entry.date,
         }));
       this.globalStore.merge(mapped);
-      return mapped;
+      return mapped.slice(0, limit);
     } catch (error) {
-      console.warn("Failed to load scores from Supabase. Using local cache.", error);
+      console.warn("Failed to load scores from Tauri backend. Using local cache.", error);
       return this.globalStore.top(limit);
     }
   }
@@ -173,17 +158,13 @@ class SupabaseScoreboardStore implements ScoreboardStore {
   public async add(entry: ScoreEntry): Promise<void> {
     await this.globalStore.add(entry);
     try {
-      const { error } = await this.client.from(this.table).insert({
-        player_name: entry.user,
-        score: entry.score,
-        level: entry.level,
-        created_at: entry.date,
+      await invoke("submit_global_score", {
+        entry,
+        supabaseUrl: this.supabaseUrl || null,
+        supabaseAnonKey: this.supabaseAnonKey || null,
       });
-      if (error) {
-        console.warn("Failed to save score to Supabase. Score kept locally.", error);
-      }
     } catch (error) {
-      console.warn("Failed to save score to Supabase. Score kept locally.", error);
+      console.warn("Failed to save score through Tauri backend. Score kept locally.", error);
     }
   }
 
@@ -195,16 +176,16 @@ class SupabaseScoreboardStore implements ScoreboardStore {
     return this.personalStore.add(entry);
   }
 
-  private isScoreRow(entry: unknown): entry is ScoreRow {
+  private isScoreEntry(entry: unknown): entry is ScoreEntry {
     if (!entry || typeof entry !== "object") {
       return false;
     }
     const record = entry as Record<string, unknown>;
     return (
-      typeof record.player_name === "string" &&
+      typeof record.user === "string" &&
       typeof record.score === "number" &&
       typeof record.level === "number" &&
-      typeof record.created_at === "string"
+      typeof record.date === "string"
     );
   }
 }
@@ -216,12 +197,11 @@ export function createScoreboardStore(): ScoreboardStore {
   const supabaseAnonKey = readEnv("VITE_SUPABASE_ANON_KEY");
 
   if (!supabaseUrl || !supabaseAnonKey) {
-    console.info("Supabase env is not configured. Using local scoreboard only.");
+    console.info("Supabase env is not configured. Global score sync is disabled.");
     return new LocalOnlyScoreboardStore(globalStore, personalStore);
   }
 
-  const supabase = createClient(supabaseUrl, supabaseAnonKey);
-  return new SupabaseScoreboardStore(supabase, globalStore, personalStore);
+  return new TauriScoreboardStore(globalStore, personalStore, supabaseUrl, supabaseAnonKey);
 }
 
 function readEnv(key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY"): string {
