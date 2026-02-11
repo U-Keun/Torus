@@ -1,15 +1,102 @@
-# Torus (Tauri)
+# Torus (Tauri Desktop)
 
-Emacs Lisp 기반 `torus` 게임을 Tauri + TypeScript로 이식한 데스크톱 앱입니다.
+Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus` game from the [newbiemacs project](https://github.com/jangsookim/newbiemacs).
 
-## Run
+## Features
+
+- Emacs-style ASCII torus gameplay with animated falling tori.
+- Pole movement under the box, with pick/drop mechanics.
+- Three difficulties:
+  - `1`: Normal
+  - `2`: Half-glazed + Rotate
+  - `3`: Half-glazed + Flip
+- Theme switching and compact single-screen desktop layout.
+- `GLOBAL TOP 10` and `PERSONAL TOP 10` scoreboard views.
+- Optional online score submission (Supabase).
+- Per-install UUID in Tauri backend: one online record per device, updated only when score is better.
+- Local fallback cache if network/Supabase is unavailable.
+
+## Controls
+
+- Move: `Arrow keys` or `j/l/i/k`
+- New game: `n`
+- Resume: `r`
+- Pause: `p`
+- Reset: `q`
+- Theme: `c`
+- Toggle scoreboard: `s`
+- Toggle key card: `h`
+- Difficulty: `1/2/3`
+
+Keyboard input uses both `event.key` and `event.code`, so game controls still work in non-English IME layouts (for example Korean input mode).
+
+## Tech Stack
+
+- Frontend: Vite + TypeScript
+- Desktop runtime: Tauri v2
+- Backend commands: Rust (Tauri `invoke`)
+- Online ranking: Supabase REST API (`scores` table)
+- Local persistence: browser localStorage + Tauri app data cache
+
+## Quick Start
+
+### Requirements
+
+- Node.js 20+
+- Rust toolchain (stable)
+- Tauri system prerequisites for macOS
+
+### Install and run
 
 ```bash
 npm install
 cp .env.example .env
-# .env에 Supabase URL/anon key 입력
+# Fill .env values
 npm run tauri dev
 ```
+
+### Environment variables
+
+```bash
+VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
+VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_PUBLIC_KEY
+```
+
+If these are not set, online sync is disabled and scoreboard works in local-only mode.
+
+## Supabase Setup
+
+1. Create a Supabase project.
+2. Open SQL Editor and run `/supabase/schema.sql`.
+3. Copy project URL and anon key into `.env`.
+4. Start the app and submit a score.
+
+The schema includes:
+
+- `scores.player_name` (`text`)
+- `scores.client_uuid` (`text`, unique)
+- `scores.score` (`integer`)
+- `scores.level` (`integer`)
+- `scores.created_at` (`timestamptz`)
+
+Ranking query order is:
+
+1. `score DESC`
+2. `level DESC`
+3. `created_at DESC`
+
+Default fetch size is top 10.
+
+## Score Submission Model
+
+- Personal records are always stored locally.
+- Online submission is optional.
+- Tauri backend generates and stores a UUID at first run (`device-uuid-v1.txt` in app data dir).
+- When submitting online:
+  - If UUID does not exist in DB: insert.
+  - If UUID exists: update only if new score is better (or same score with higher level).
+
+This prevents duplicate online entries from the same installation.
 
 ## Build
 
@@ -18,97 +105,39 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
-## Xcode Project (Generated)
-
-`Tauri` 데스크톱 앱은 기본적으로 `.xcodeproj`를 저장소에 두지 않으므로, clone 후 아래 명령으로 생성해서 사용합니다.
-
-```bash
-# 1) 한 번만 설치
-brew install xcodegen
-
-# 2) 프로젝트 생성
-npm run xcodeproj:gen
-
-# 3) 생성 + 바로 열기
-npm run xcodeproj:open
-```
-
-- 생성물: `Torus.xcodeproj` (git ignore 처리됨)
-- `Torus` 타깃: `npm run tauri dev`
-- `TorusBuild` 타깃: `npm run tauri build`
-
-## Controls
-
-- 이동: `←/→/↑/↓` 또는 `j/l/i/k`
-- 새 게임: `n`
-- 일시정지: `p`
-- 재개: `r`
-- 종료(리셋): `q`
-- 난이도 변경: `1`, `2`, `3`
-- 테마 변경: `c`
-- 스코어보드 토글: `s`
-
-## Notes
-
-- 스코어보드 저장/조회는 프론트가 직접 DB를 호출하지 않고 Tauri(Rust) 커맨드를 통해 처리합니다.
-- Tauri 백엔드는 Supabase REST(`scores` 테이블) 우선 저장/조회, 실패 시 앱 로컬 캐시 fallback을 사용합니다.
-- Game Over 저장 시 개인 기록은 항상 로컬(`torus-personal-scores-v1`)에 저장되며, 카드의 `Personal` 버튼으로 Personal Top 10을 볼 수 있습니다.
-- Emacs 버전의 핵심 규칙(폴 이동/적재, 행 멜트, 레벨업/열 증가, 난이도별 회전/뒤집기)을 반영했습니다.
-- 기존 Emacs 버전의 HTTP 점수 서버(`localhost:5001`) 대신 Supabase + Tauri 백엔드 동기화 방식을 사용합니다.
-
-## Supabase Setup
-
-1. Supabase에서 새 프로젝트 생성
-2. SQL Editor에서 `supabase/schema.sql` 실행
-3. 프로젝트 설정에서 URL과 `anon` key 확인
-4. 루트 `.env` 파일에 입력
-
-```bash
-VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
-VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_PUBLIC_KEY
-```
-
-5. 앱 실행 후 Game Over에서 이름 저장하면 Top10이 기기 간 동기화됩니다.
-
-## Security Notes
-
-- 앱에는 `anon` key만 넣어야 합니다.
-- `service_role` key는 절대 클라이언트에 넣지 마세요.
-
 ## Mac App Store Release
 
 ### Prerequisites
 
-1. Apple Developer 계정 + App Store Connect 앱 생성 (`Bundle ID: com.u-keunsong.Torus`)
-2. Keychain에 아래 인증서 설치
-- `Mac App Distribution`
-- `Mac Installer Distribution`
-3. macOS App Store provisioning profile 다운로드 후 저장
-- `/Users/u-keunsong/Desktop/Projects/Torus/src-tauri/embedded.provisionprofile`
-4. App Store Connect API key 생성
-- `APPLE_API_KEY_ID`
-- `APPLE_API_ISSUER`
-- `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8` 배치
+- Apple Developer account
+- App registered in App Store Connect
+- Installed certificates:
+  - `Mac App Distribution`
+  - `Mac Installer Distribution`
+- Provisioning profile at:
+  - `src-tauri/embedded.provisionprofile`
+- App Store Connect API key at:
+  - `~/.appstoreconnect/private_keys/AuthKey_<KEY_ID>.p8`
 
 ### Commands
 
 ```bash
-# 0) 배포 사전 점검 (인증서/프로파일/API 키/식별자 확인)
+# Preflight checks (cert/profile/API key/bundle id)
 npm run mas:check
 
-# 1) App Store용 .app 빌드
+# Build signed .app for Mac App Store
 npm run mas:build
 
-# 2) App Store 업로드용 .pkg 생성
+# Create uploadable .pkg
 npm run mas:package
 
-# 3) App Store Connect 업로드
+# Upload to App Store Connect
 APPLE_API_KEY_ID=xxxx \
 APPLE_API_ISSUER=yyyy \
 npm run mas:upload
 ```
 
-한 번에 실행:
+Run all at once:
 
 ```bash
 APPLE_API_KEY_ID=xxxx \
@@ -116,15 +145,16 @@ APPLE_API_ISSUER=yyyy \
 npm run mas:release
 ```
 
-### GitHub Actions Automation
+## GitHub Actions (MAS Automation)
 
-워크플로우 파일: `.github/workflows/mas-release.yml`
+Workflow file: `.github/workflows/mas-release.yml`
 
-- 수동 실행: GitHub > Actions > `mac-app-store-release` > `Run workflow`
-- 태그 실행: `v*` 태그 푸시 시 자동 실행
-- 산출물: `dist/Torus-macappstore.pkg` 아티팩트 업로드
+Triggers:
 
-필수 GitHub Secrets:
+- Manual: `workflow_dispatch`
+- Tag push: `v*`
+
+Required repository secrets:
 
 - `APPLE_API_KEY_ID`
 - `APPLE_API_ISSUER`
@@ -133,27 +163,16 @@ npm run mas:release
 - `MAS_PROVISION_PROFILE_BASE64`
 - `APP_STORE_CONNECT_API_KEY_P8_BASE64`
 
-Secrets 생성 예시(로컬 macOS):
+The workflow uploads `dist/Torus-macappstore.pkg` as an artifact and can upload directly to App Store Connect.
 
-```bash
-# 인증서(p12) - App/Installer 인증서를 함께 포함한 p12
-base64 < certificates.p12 | pbcopy
+## Project Structure
 
-# provisioning profile
-base64 < embedded.provisionprofile | pbcopy
+- `src/main.ts`: app bootstrap and UI/event wiring
+- `src/game.ts`: game loop and mechanics
+- `src/scoreboard.ts`: local/global scoreboard store abstraction
+- `src/ui/layout.ts`: DOM template and bindings
+- `src/ui/renderer.ts`: rendering logic (playfield, HUD, cards)
+- `src/ui/theme.ts`: theme handling
+- `src-tauri/src/scoreboard.rs`: backend fetch/submit/cache/UUID logic
+- `supabase/schema.sql`: DB schema and RLS policies
 
-# App Store Connect API key (.p8)
-base64 < AuthKey_<KEY_ID>.p8 | pbcopy
-```
-
-워크플로우는 기본적으로 `CFBundleVersion=1.0.<run_number>`를 사용합니다.
-수동 실행 시 `bundle_version` 입력으로 덮어쓸 수 있습니다.
-
-## Refactor Structure
-
-- `src/main.ts`: 앱 초기화와 이벤트 wiring
-- `src/game.ts`: 게임 규칙 엔진(상태/틱 업데이트)
-- `src/ui/layout.ts`: 화면 템플릿과 DOM 바인딩
-- `src/ui/renderer.ts`: 게임 상태 렌더링(Box/Pole/HUD/Score list)
-- `src/ui/theme.ts`: 테마 팔레트/테마 전환 로직
-- `src/scoreboard.ts`: 점수 저장/검증/정렬
