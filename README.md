@@ -1,5 +1,9 @@
 # Torus (Tauri Desktop)
 
+<p align="center">
+  <img width="600" height="400" alt="스크린샷 2026-02-12 오전 12 28 26" src="https://github.com/user-attachments/assets/8b801e3b-4cb0-4f2b-b332-a995ba880b54" />
+</p>
+
 Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus` game from the [newbiemacs project](https://github.com/jangsookim/newbiemacs).
 
 ## Features
