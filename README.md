@@ -18,6 +18,25 @@ npm run build
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
 
+## Xcode Project (Generated)
+
+`Tauri` 데스크톱 앱은 기본적으로 `.xcodeproj`를 저장소에 두지 않으므로, clone 후 아래 명령으로 생성해서 사용합니다.
+
+```bash
+# 1) 한 번만 설치
+brew install xcodegen
+
+# 2) 프로젝트 생성
+npm run xcodeproj:gen
+
+# 3) 생성 + 바로 열기
+npm run xcodeproj:open
+```
+
+- 생성물: `Torus.xcodeproj` (git ignore 처리됨)
+- `Torus` 타깃: `npm run tauri dev`
+- `TorusBuild` 타깃: `npm run tauri build`
+
 ## Controls
 
 - 이동: `←/→/↑/↓` 또는 `j/l/i/k`

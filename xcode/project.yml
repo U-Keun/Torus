@@ -1,0 +1,28 @@
+name: Torus
+options:
+  createIntermediateGroups: true
+  deploymentTarget:
+    macOS: "13.0"
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: com.u-keunsong.Torus
+configs:
+  Debug: debug
+  Release: release
+targets:
+  Torus:
+    type: tool
+    platform: macOS
+    legacy:
+      toolPath: /usr/bin/env
+      arguments: "bash -lc 'cd \"$PROJECT_DIR\" && npm run tauri dev'"
+      passSettings: false
+      workingDirectory: "$(PROJECT_DIR)"
+  TorusBuild:
+    type: tool
+    platform: macOS
+    legacy:
+      toolPath: /usr/bin/env
+      arguments: "bash -lc 'cd \"$PROJECT_DIR\" && npm run tauri build'"
+      passSettings: false
+      workingDirectory: "$(PROJECT_DIR)"
