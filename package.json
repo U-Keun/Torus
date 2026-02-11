@@ -1,0 +1,26 @@
+{
+  "name": "torus-tauri",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "mas:build": "bash scripts/macos-appstore-release.sh build",
+    "mas:package": "bash scripts/macos-appstore-release.sh package",
+    "mas:upload": "bash scripts/macos-appstore-release.sh upload",
+    "mas:release": "bash scripts/macos-appstore-release.sh all"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.95.3",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-opener": "^2"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3"
+  }
+}
