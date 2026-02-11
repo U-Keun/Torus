@@ -8,6 +8,8 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "xcodeproj:gen": "bash scripts/generate-xcodeproj.sh",
+    "xcodeproj:open": "bash scripts/generate-xcodeproj.sh --open",
     "mas:build": "bash scripts/macos-appstore-release.sh build",
     "mas:package": "bash scripts/macos-appstore-release.sh package",
     "mas:upload": "bash scripts/macos-appstore-release.sh upload",

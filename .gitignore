@@ -38,6 +38,7 @@ AuthKey_*.p8
 
 # macOS / Xcode user data
 .DS_Store
+Torus.xcodeproj/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
 *.xcuserstate
