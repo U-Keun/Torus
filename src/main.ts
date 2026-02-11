@@ -19,11 +19,18 @@ const scoreboardStore = createScoreboardStore();
 const LAST_USER_STORAGE_KEY = "torus-last-user-v1";
 const DEVICE_BEST_STORAGE_KEY = "torus-device-best-v1";
 const SUBMIT_DB_PREF_STORAGE_KEY = "torus-submit-db-pref-v1";
+const PERSONAL_SUBMIT_BUTTON_LABEL = "Submit";
+const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
+const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
 let pendingGameOverPayload: GameOverPayload | null = null;
+let pendingSubmitEntry: ScoreEntry | null = null;
 let keyCardVisible = true;
 let canResume = false;
 let savingGameOver = false;
 let refreshingScoreboard = false;
+let submittingPersonalBest = false;
+let preparingPersonalSubmit = false;
+let switchingScoreboardView = false;
 let scoreboardView: ScoreboardView = "global";
 
 const game = new TorusGame(
@@ -43,6 +50,7 @@ renderer.refreshLayout();
 bindUiControls();
 bindKeyboardControls();
 bindGameOverModal();
+bindSubmitConfirmModal();
 
 window.addEventListener("resize", () => {
   renderer.refreshLayout();
@@ -86,12 +94,16 @@ function bindUiControls(): void {
   });
 
   dom.personalScoreBtn.addEventListener("click", () => {
-    toggleScoreboardView();
+    void toggleScoreboardView();
+  });
+
+  dom.submitPersonalBtn.addEventListener("click", () => {
+    void openSubmitConfirmModal();
   });
 }
 
 function bindKeyboardControls(): void {
-  const actions: Record<string, () => void> = {
+  const actionsByKey: Record<string, () => void> = {
     arrowleft: () => game.moveLeft(),
     j: () => game.moveLeft(),
     arrowright: () => game.moveRight(),
@@ -112,8 +124,46 @@ function bindKeyboardControls(): void {
     "3": () => setDifficulty(3),
   };
 
+  const actionsByCode: Record<string, () => void> = {
+    ArrowLeft: () => game.moveLeft(),
+    KeyJ: () => game.moveLeft(),
+    ArrowRight: () => game.moveRight(),
+    KeyL: () => game.moveRight(),
+    ArrowUp: () => game.moveUp(),
+    KeyI: () => game.moveUp(),
+    ArrowDown: () => game.moveDown(),
+    KeyK: () => game.moveDown(),
+    KeyN: () => startNewGame(),
+    KeyR: () => resumeGame(),
+    KeyP: () => pauseGame(),
+    KeyQ: () => resetGame(),
+    KeyC: () => themeManager.cycle(),
+    KeyS: () => renderer.toggleScoreboard(),
+    KeyH: () => toggleKeyCard(),
+    Digit1: () => setDifficulty(1),
+    Digit2: () => setDifficulty(2),
+    Digit3: () => setDifficulty(3),
+    Numpad1: () => setDifficulty(1),
+    Numpad2: () => setDifficulty(2),
+    Numpad3: () => setDifficulty(3),
+  };
+
   window.addEventListener("keydown", (event) => {
     if (isFormTarget(event.target)) {
+      return;
+    }
+
+    if (event.metaKey || event.ctrlKey || event.altKey) {
+      return;
+    }
+
+    if (isSubmitConfirmModalOpen()) {
+      if (event.key === "Escape") {
+        closeSubmitConfirmModal();
+      } else if (event.key === "Enter") {
+        void confirmSubmitPersonalBest();
+      }
+      event.preventDefault();
       return;
     }
 
@@ -121,7 +171,7 @@ function bindKeyboardControls(): void {
       return;
     }
 
-    const action = actions[event.key.toLowerCase()];
+    const action = actionsByCode[event.code] ?? actionsByKey[event.key.toLowerCase()];
     if (!action) {
       return;
     }
@@ -133,6 +183,7 @@ function bindKeyboardControls(): void {
 
 function startNewGame(): void {
   closeGameOverModal();
+  closeSubmitConfirmModal();
   game.startNewGame(parseDifficulty(dom.difficultyEl.value));
   canResume = true;
   setStatus("Running");
@@ -153,6 +204,7 @@ function pauseGame(): void {
 
 function resetGame(): void {
   closeGameOverModal();
+  closeSubmitConfirmModal();
   game.reset();
   canResume = false;
   setStatus("Paused");
@@ -229,7 +281,28 @@ function bindGameOverModal(): void {
   });
 }
 
+function bindSubmitConfirmModal(): void {
+  dom.submitConfirmCancelBtn.addEventListener("click", () => {
+    closeSubmitConfirmModal();
+  });
+
+  dom.submitConfirmConfirmBtn.addEventListener("click", () => {
+    void confirmSubmitPersonalBest();
+  });
+
+  dom.submitConfirmModalEl.addEventListener("click", (event) => {
+    if (
+      event.target === dom.submitConfirmModalEl &&
+      !preparingPersonalSubmit &&
+      !submittingPersonalBest
+    ) {
+      closeSubmitConfirmModal();
+    }
+  });
+}
+
 function openGameOverModal(payload: GameOverPayload): void {
+  closeSubmitConfirmModal();
   const lastUser = game.getLastUser().trim();
   savingGameOver = false;
   dom.gameOverSaveBtn.disabled = false;
@@ -239,7 +312,7 @@ function openGameOverModal(payload: GameOverPayload): void {
   dom.gameOverNameEl.value = "";
   dom.gameOverNameEl.placeholder = lastUser.length > 0
     ? lastUser
-    : "이름 입력 (최대 20자)";
+    : "Enter name (max 20 chars)";
   dom.gameOverSubmitDbEl.checked = loadSubmitDbPreference();
   updateGameOverSubmissionHint(payload);
   dom.gameOverModalEl.classList.remove("hidden");
@@ -293,6 +366,7 @@ async function saveGameOverScore(): Promise<void> {
     let shouldRefreshGlobal = false;
     if (dom.gameOverSubmitDbEl.checked && isDeviceBest) {
       await scoreboardStore.add(entry);
+      await refreshGlobalTop10Data();
       shouldRefreshGlobal = true;
     }
     if (scoreboardView === "personal" || shouldRefreshGlobal) {
@@ -328,18 +402,143 @@ async function refreshScoreboard(): Promise<void> {
   }
 }
 
-function toggleScoreboardView(): void {
-  scoreboardView = scoreboardView === "global" ? "personal" : "global";
-  syncScoreboardViewUi();
-  void refreshScoreboard();
+async function refreshGlobalTop10Data(): Promise<void> {
+  const globalRows = await scoreboardStore.top(10);
+  if (scoreboardView === "global") {
+    renderer.renderScoreboard(globalRows);
+  }
+}
+
+async function openSubmitConfirmModal(): Promise<void> {
+  if (isSubmitConfirmModalOpen() || preparingPersonalSubmit || submittingPersonalBest) {
+    return;
+  }
+
+  pendingSubmitEntry = null;
+  preparingPersonalSubmit = true;
+  dom.submitConfirmConfirmBtn.disabled = true;
+  dom.submitConfirmConfirmBtn.textContent = "Submit";
+  dom.submitConfirmCancelBtn.disabled = false;
+  dom.submitConfirmMessageEl.textContent = "Checking your personal best record...";
+  dom.submitConfirmModalEl.classList.remove("hidden");
+  dom.submitConfirmCancelBtn.focus();
+
+  try {
+    const [bestPersonal] = await scoreboardStore.topPersonal(1);
+    if (!isSubmitConfirmModalOpen()) {
+      return;
+    }
+
+    if (!bestPersonal) {
+      dom.submitConfirmMessageEl.textContent = "No personal record available to submit.";
+      return;
+    }
+
+    pendingSubmitEntry = bestPersonal;
+    dom.submitConfirmMessageEl.textContent =
+      `Submit this record to GLOBAL TOP 10?\n${bestPersonal.user} · ${bestPersonal.score} pts · Lv.${bestPersonal.level}`;
+    dom.submitConfirmConfirmBtn.disabled = false;
+    dom.submitConfirmConfirmBtn.focus();
+  } catch (error) {
+    console.warn("Failed to prepare personal best score submission.", error);
+    dom.submitConfirmMessageEl.textContent = "Failed to check records. Please try again.";
+  } finally {
+    preparingPersonalSubmit = false;
+  }
+}
+
+async function confirmSubmitPersonalBest(): Promise<void> {
+  if (preparingPersonalSubmit || submittingPersonalBest) {
+    return;
+  }
+  if (!pendingSubmitEntry) {
+    closeSubmitConfirmModal();
+    return;
+  }
+
+  submittingPersonalBest = true;
+  dom.submitConfirmConfirmBtn.disabled = true;
+  dom.submitConfirmCancelBtn.disabled = true;
+  dom.submitConfirmConfirmBtn.textContent = "Submitting";
+  dom.submitPersonalBtn.disabled = true;
+  dom.submitPersonalBtn.textContent = "Submitting";
+
+  try {
+    await scoreboardStore.add(pendingSubmitEntry);
+    dom.submitPersonalBtn.textContent = "Submitted";
+    closeSubmitConfirmModal(true);
+    await refreshGlobalTop10Data();
+  } catch (error) {
+    console.warn("Failed to submit personal best score.", error);
+    dom.submitPersonalBtn.textContent = "Retry";
+    dom.submitConfirmMessageEl.textContent = "Submission failed. Please try again.";
+    dom.submitConfirmConfirmBtn.disabled = false;
+    dom.submitConfirmCancelBtn.disabled = false;
+    dom.submitConfirmConfirmBtn.textContent = "Retry";
+  } finally {
+    submittingPersonalBest = false;
+    window.setTimeout(() => {
+      if (!submittingPersonalBest) {
+        dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
+        dom.submitPersonalBtn.disabled = false;
+      }
+    }, 1200);
+  }
+}
+
+function closeSubmitConfirmModal(force = false): void {
+  if (submittingPersonalBest && !force) {
+    return;
+  }
+  pendingSubmitEntry = null;
+  preparingPersonalSubmit = false;
+  dom.submitConfirmModalEl.classList.add("hidden");
+  dom.submitConfirmConfirmBtn.disabled = true;
+  dom.submitConfirmConfirmBtn.textContent = "Submit";
+  dom.submitConfirmCancelBtn.disabled = false;
+}
+
+function isSubmitConfirmModalOpen(): boolean {
+  return !dom.submitConfirmModalEl.classList.contains("hidden");
+}
+
+async function toggleScoreboardView(): Promise<void> {
+  if (switchingScoreboardView) {
+    return;
+  }
+
+  switchingScoreboardView = true;
+  try {
+    dom.scoreListEl.classList.add("view-fade-out");
+    await delay(120);
+
+    scoreboardView = scoreboardView === "global" ? "personal" : "global";
+    syncScoreboardViewUi();
+    await refreshScoreboard();
+
+    dom.scoreListEl.classList.remove("view-fade-out");
+    dom.scoreListEl.classList.remove("view-fade-in");
+    void dom.scoreListEl.offsetWidth;
+    dom.scoreListEl.classList.add("view-fade-in");
+    window.setTimeout(() => {
+      dom.scoreListEl.classList.remove("view-fade-in");
+    }, 180);
+  } finally {
+    dom.scoreListEl.classList.remove("view-fade-out");
+    switchingScoreboardView = false;
+  }
 }
 
 function syncScoreboardViewUi(): void {
   const personalMode = scoreboardView === "personal";
-  dom.scoreTitleEl.textContent = personalMode ? "Personal Top 10" : "Top 10";
+  dom.scoreTitleEl.textContent = personalMode ? PERSONAL_SCORE_TITLE : GLOBAL_SCORE_TITLE;
   dom.personalScoreBtn.classList.toggle("active", personalMode);
   dom.personalScoreBtn.setAttribute("aria-pressed", personalMode ? "true" : "false");
   dom.personalScoreBtn.textContent = personalMode ? "Global" : "Personal";
+  if (!submittingPersonalBest) {
+    dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
+    dom.submitPersonalBtn.disabled = false;
+  }
 }
 
 function loadLastUser(): string {
@@ -360,6 +559,12 @@ function saveLastUser(user: string): void {
   } catch {
     // Ignore storage failures and continue saving score.
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function loadSubmitDbPreference(): boolean {
@@ -443,8 +648,8 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
     dom.gameOverSubmitDbEl.disabled = false;
     dom.gameOverBestHintEl.className = "gameover-hint good";
     dom.gameOverBestHintEl.textContent = best
-      ? `새 기기 최고점입니다. (이전: ${best.score} / Lv.${best.level})`
-      : "첫 기기 기록입니다.";
+      ? `New device best score. (Previous: ${best.score} / Lv.${best.level})`
+      : "This is your first device record.";
     return;
   }
 
@@ -452,6 +657,6 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
   dom.gameOverSubmitDbEl.disabled = true;
   dom.gameOverBestHintEl.className = "gameover-hint warn";
   dom.gameOverBestHintEl.textContent = best
-    ? `현재 기기 최고점(${best.score} / Lv.${best.level})보다 낮아 DB 제출이 비활성화됩니다.`
-    : "현재 점수는 기기 최고점이 아닙니다.";
+    ? `Lower than this device best (${best.score} / Lv.${best.level}), so DB submission is disabled.`
+    : "Current score is not your device best.";
 }

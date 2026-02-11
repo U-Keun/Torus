@@ -50,10 +50,11 @@ npm run xcodeproj:open
 
 ## Notes
 
-- 스코어보드는 Supabase(`scores` 테이블) 우선 저장/조회, 실패 시 `localStorage` fallback을 사용합니다.
+- 스코어보드 저장/조회는 프론트가 직접 DB를 호출하지 않고 Tauri(Rust) 커맨드를 통해 처리합니다.
+- Tauri 백엔드는 Supabase REST(`scores` 테이블) 우선 저장/조회, 실패 시 앱 로컬 캐시 fallback을 사용합니다.
 - Game Over 저장 시 개인 기록은 항상 로컬(`torus-personal-scores-v1`)에 저장되며, 카드의 `Personal` 버튼으로 Personal Top 10을 볼 수 있습니다.
 - Emacs 버전의 핵심 규칙(폴 이동/적재, 행 멜트, 레벨업/열 증가, 난이도별 회전/뒤집기)을 반영했습니다.
-- 기존 Emacs 버전의 HTTP 점수 서버(`localhost:5001`) 대신 Supabase 동기화 방식을 사용합니다.
+- 기존 Emacs 버전의 HTTP 점수 서버(`localhost:5001`) 대신 Supabase + Tauri 백엔드 동기화 방식을 사용합니다.
 
 ## Supabase Setup
 
@@ -92,6 +93,9 @@ VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_PUBLIC_KEY
 ### Commands
 
 ```bash
+# 0) 배포 사전 점검 (인증서/프로파일/API 키/식별자 확인)
+npm run mas:check
+
 # 1) App Store용 .app 빌드
 npm run mas:build
 
@@ -111,6 +115,39 @@ APPLE_API_KEY_ID=xxxx \
 APPLE_API_ISSUER=yyyy \
 npm run mas:release
 ```
+
+### GitHub Actions Automation
+
+워크플로우 파일: `.github/workflows/mas-release.yml`
+
+- 수동 실행: GitHub > Actions > `mac-app-store-release` > `Run workflow`
+- 태그 실행: `v*` 태그 푸시 시 자동 실행
+- 산출물: `dist/Torus-macappstore.pkg` 아티팩트 업로드
+
+필수 GitHub Secrets:
+
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER`
+- `MAS_CERTIFICATES_P12_BASE64`
+- `MAS_CERTIFICATES_P12_PASSWORD`
+- `MAS_PROVISION_PROFILE_BASE64`
+- `APP_STORE_CONNECT_API_KEY_P8_BASE64`
+
+Secrets 생성 예시(로컬 macOS):
+
+```bash
+# 인증서(p12) - App/Installer 인증서를 함께 포함한 p12
+base64 < certificates.p12 | pbcopy
+
+# provisioning profile
+base64 < embedded.provisionprofile | pbcopy
+
+# App Store Connect API key (.p8)
+base64 < AuthKey_<KEY_ID>.p8 | pbcopy
+```
+
+워크플로우는 기본적으로 `CFBundleVersion=1.0.<run_number>`를 사용합니다.
+수동 실행 시 `bundle_version` 입력으로 덮어쓸 수 있습니다.
 
 ## Refactor Structure
 
