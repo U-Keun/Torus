@@ -1,10 +1,23 @@
 import { invoke } from "@tauri-apps/api/core";
 
+export interface SkillUsageEntry {
+  name: string;
+  hotkey: string | null;
+  command: string | null;
+}
+
+interface RawSkillUsageEntry {
+  name: string;
+  hotkey: string | null;
+  command?: string | null;
+}
+
 export interface ScoreEntry {
   user: string;
   score: number;
   level: number;
   date: string;
+  skillUsage: SkillUsageEntry[];
 }
 
 export interface ScoreboardStore {
@@ -60,6 +73,7 @@ class LocalEntryStore {
           score: entry.score,
           level: entry.level,
           date: entry.date,
+          skillUsage: this.normalizeSkillUsage(entry.skillUsage),
         }));
     } catch {
       return [];
@@ -83,7 +97,7 @@ class LocalEntryStore {
   }
 
   private entryKey(entry: ScoreEntry): string {
-    return `${entry.user}::${entry.score}::${entry.level}::${entry.date}`;
+    return `${entry.user}::${entry.score}::${entry.level}::${entry.date}::${JSON.stringify(entry.skillUsage)}`;
   }
 
   private isScoreEntry(entry: unknown): entry is ScoreEntry {
@@ -96,7 +110,46 @@ class LocalEntryStore {
       typeof record.user === "string" &&
       typeof record.score === "number" &&
       typeof record.level === "number" &&
-      typeof record.date === "string"
+      typeof record.date === "string" &&
+      (
+        typeof record.skillUsage === "undefined" ||
+        this.isSkillUsageArray(record.skillUsage)
+      )
+    );
+  }
+
+  private normalizeSkillUsage(raw: unknown): SkillUsageEntry[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .filter((entry): entry is RawSkillUsageEntry => this.isSkillUsageEntry(entry))
+      .map((entry) => ({
+        name: entry.name.trim().slice(0, 20),
+        hotkey: entry.hotkey ? entry.hotkey.trim().slice(0, 16) : null,
+        command: normalizeSkillCommand(entry.command),
+      }))
+      .filter((entry) => entry.name.length > 0)
+      .slice(0, 20);
+  }
+
+  private isSkillUsageArray(raw: unknown): raw is RawSkillUsageEntry[] {
+    return Array.isArray(raw) && raw.every((entry) => this.isSkillUsageEntry(entry));
+  }
+
+  private isSkillUsageEntry(raw: unknown): raw is RawSkillUsageEntry {
+    if (!raw || typeof raw !== "object") {
+      return false;
+    }
+    const row = raw as Record<string, unknown>;
+    return (
+      typeof row.name === "string" &&
+      (typeof row.hotkey === "string" || row.hotkey === null) &&
+      (
+        typeof row.command === "string" ||
+        row.command === null ||
+        typeof row.command === "undefined"
+      )
     );
   }
 }
@@ -146,6 +199,7 @@ class TauriScoreboardStore implements ScoreboardStore {
           score: entry.score,
           level: entry.level,
           date: entry.date,
+          skillUsage: this.normalizeSkillUsage(entry.skillUsage),
         }));
       this.globalStore.merge(mapped);
       return mapped.slice(0, limit);
@@ -185,7 +239,46 @@ class TauriScoreboardStore implements ScoreboardStore {
       typeof record.user === "string" &&
       typeof record.score === "number" &&
       typeof record.level === "number" &&
-      typeof record.date === "string"
+      typeof record.date === "string" &&
+      (
+        typeof record.skillUsage === "undefined" ||
+        this.isSkillUsageArray(record.skillUsage)
+      )
+    );
+  }
+
+  private normalizeSkillUsage(raw: unknown): SkillUsageEntry[] {
+    if (!Array.isArray(raw)) {
+      return [];
+    }
+    return raw
+      .filter((entry): entry is RawSkillUsageEntry => this.isSkillUsageEntry(entry))
+      .map((entry) => ({
+        name: entry.name.trim().slice(0, 20),
+        hotkey: entry.hotkey ? entry.hotkey.trim().slice(0, 16) : null,
+        command: normalizeSkillCommand(entry.command),
+      }))
+      .filter((entry) => entry.name.length > 0)
+      .slice(0, 20);
+  }
+
+  private isSkillUsageArray(raw: unknown): raw is RawSkillUsageEntry[] {
+    return Array.isArray(raw) && raw.every((entry) => this.isSkillUsageEntry(entry));
+  }
+
+  private isSkillUsageEntry(raw: unknown): raw is RawSkillUsageEntry {
+    if (!raw || typeof raw !== "object") {
+      return false;
+    }
+    const row = raw as Record<string, unknown>;
+    return (
+      typeof row.name === "string" &&
+      (typeof row.hotkey === "string" || row.hotkey === null) &&
+      (
+        typeof row.command === "string" ||
+        row.command === null ||
+        typeof row.command === "undefined"
+      )
     );
   }
 }
@@ -210,4 +303,12 @@ function readEnv(key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY"): string {
     return "";
   }
   return value.trim();
+}
+
+function normalizeSkillCommand(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const value = raw.trim().slice(0, 120);
+  return value.length > 0 ? value : null;
 }

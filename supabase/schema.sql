@@ -4,6 +4,7 @@ create table if not exists public.scores (
   client_uuid text not null unique check (char_length(trim(client_uuid)) between 8 and 80),
   score integer not null check (score >= 0),
   level integer not null check (level >= 0),
+  skill_usage jsonb not null default '[]'::jsonb,
   created_at timestamptz not null default now()
 );
 
@@ -12,6 +13,9 @@ create index if not exists idx_scores_rank
 
 alter table public.scores
   add column if not exists client_uuid text;
+
+alter table public.scores
+  add column if not exists skill_usage jsonb not null default '[]'::jsonb;
 
 update public.scores
 set client_uuid = concat('legacy-', id::text)
