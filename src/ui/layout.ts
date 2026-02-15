@@ -27,6 +27,7 @@ export interface TorusDom {
   pauseBtn: HTMLButtonElement;
   quitBtn: HTMLButtonElement;
   themeBtn: HTMLButtonElement;
+  skillsBtn: HTMLButtonElement;
   toggleScoreBtn: HTMLButtonElement;
   toggleKeyBtn: HTMLButtonElement;
   gameOverModalEl: HTMLDivElement;
@@ -37,6 +38,18 @@ export interface TorusDom {
   gameOverBestHintEl: HTMLParagraphElement;
   gameOverSaveBtn: HTMLButtonElement;
   gameOverSkipBtn: HTMLButtonElement;
+  skillsModalEl: HTMLDivElement;
+  skillsDialogEl: HTMLDivElement;
+  skillsCloseBtn: HTMLButtonElement;
+  skillsFormEl: HTMLFormElement;
+  skillNameEl: HTMLInputElement;
+  skillSequenceEl: HTMLInputElement;
+  skillHotkeyEl: HTMLInputElement;
+  skillCancelEditBtn: HTMLButtonElement;
+  skillSaveBtn: HTMLButtonElement;
+  skillFormMessageEl: HTMLParagraphElement;
+  skillsListEl: HTMLUListElement;
+  skillRunStatusEl: HTMLParagraphElement;
 }
 
 const APP_TEMPLATE = `
@@ -74,20 +87,21 @@ const APP_TEMPLATE = `
 
     <section class="controls fade-in-delayed-2">
       <label class="select-wrap">
-        Difficulty
+        Difficulty (9: cycle)
         <select id="difficulty">
           <option value="1">1 - Normal</option>
           <option value="2">2 - Half-glazed / Rotate</option>
           <option value="3">3 - Half-glazed / Flip</option>
         </select>
       </label>
-      <button id="new-game">New (N)</button>
-      <button id="resume-game">Resume (R)</button>
-      <button id="pause-game">Pause (P)</button>
-      <button id="theme-btn">Theme (C)</button>
-      <button id="quit-game">Quit (Q)</button>
-      <button id="toggle-score">Score Board (S)</button>
-      <button id="toggle-key">Keys (H)</button>
+      <button id="new-game">New (1)</button>
+      <button id="resume-game">Resume (2)</button>
+      <button id="pause-game">Pause (3)</button>
+      <button id="theme-btn">Theme (5)</button>
+      <button id="skills-btn">Skills (6)</button>
+      <button id="quit-game">Quit (4)</button>
+      <button id="toggle-score">Score Board (7)</button>
+      <button id="toggle-key">Keys (8)</button>
     </section>
 
     <main class="arena fade-in-delayed-3">
@@ -119,14 +133,15 @@ const APP_TEMPLATE = `
           <div class="board-header">Key Instructions</div>
           <div class="key-list">
             <p><code>←/→/↑/↓</code> or <code>j/l/i/k</code>: Move</p>
-            <p><code>n</code>: New game</p>
-            <p><code>r</code>: Resume</p>
-            <p><code>p</code>: Pause</p>
-            <p><code>q</code>: Reset</p>
-            <p><code>c</code>: Theme</p>
-            <p><code>s</code>: Toggle scoreboard</p>
-            <p><code>h</code>: Toggle key card</p>
-            <p><code>1/2/3</code>: Difficulty</p>
+            <p><code>1</code>: New game</p>
+            <p><code>2</code>: Resume</p>
+            <p><code>3</code>: Pause</p>
+            <p><code>4</code>: Reset</p>
+            <p><code>5</code>: Theme</p>
+            <p><code>6</code>: Skills</p>
+            <p><code>7</code>: Toggle scoreboard</p>
+            <p><code>8</code>: Toggle key card</p>
+            <p><code>9</code>: Difficulty cycle (<code>1 → 2 → 3 → 1</code>)</p>
           </div>
         </section>
       </aside>
@@ -158,6 +173,33 @@ const APP_TEMPLATE = `
           <button id="submit-confirm-cancel" type="button">Cancel</button>
           <button id="submit-confirm-ok" type="button" disabled>Submit</button>
         </div>
+      </div>
+    </div>
+
+    <div id="skills-modal" class="gameover-modal hidden" role="dialog" aria-modal="true" aria-labelledby="skills-title">
+      <div id="skills-dialog" class="gameover-dialog skills-dialog">
+        <div class="skills-top">
+          <h2 id="skills-title">Skills</h2>
+          <button id="skills-close" class="mini-btn" type="button">Close</button>
+        </div>
+        <p class="skills-help">
+          Create directional sequences with <code>L R U D ( )</code>, <code>j l i k</code>, or arrows. <code>(</code> and <code>)</code> are opposite dynamic horizontal directions (edge-aware pair). Hotkeys: press any keyboard key (duplicates are blocked).
+        </p>
+        <p id="skill-run-status" class="skills-run-status">Idle</p>
+        <form id="skills-form" class="skills-form">
+          <label class="gameover-label" for="skill-name">Name</label>
+          <input id="skill-name" maxlength="20" autocomplete="off" placeholder="e.g. Left Sweep" />
+          <label class="gameover-label" for="skill-sequence">Sequence</label>
+          <input id="skill-sequence" maxlength="120" autocomplete="off" placeholder="L ( ) U D R or ←←↑↓→" />
+          <label class="gameover-label" for="skill-hotkey">Hotkey (optional)</label>
+          <input id="skill-hotkey" maxlength="40" autocomplete="off" placeholder="Press any key (e.g. Slash, Tab, F6)" />
+          <div class="skills-form-actions">
+            <button id="skill-cancel-edit" type="button" hidden>Cancel Edit</button>
+            <button id="skill-save" type="submit">Save Skill</button>
+          </div>
+        </form>
+        <p id="skill-form-message" class="skills-form-message"></p>
+        <ul id="skills-list" class="skills-list"></ul>
       </div>
     </div>
   </div>
@@ -195,6 +237,7 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     pauseBtn: must<HTMLButtonElement>(container, "#pause-game"),
     quitBtn: must<HTMLButtonElement>(container, "#quit-game"),
     themeBtn: must<HTMLButtonElement>(container, "#theme-btn"),
+    skillsBtn: must<HTMLButtonElement>(container, "#skills-btn"),
     toggleScoreBtn: must<HTMLButtonElement>(container, "#toggle-score"),
     toggleKeyBtn: must<HTMLButtonElement>(container, "#toggle-key"),
     gameOverModalEl: must<HTMLDivElement>(container, "#gameover-modal"),
@@ -205,6 +248,18 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     gameOverBestHintEl: must<HTMLParagraphElement>(container, "#gameover-best-hint"),
     gameOverSaveBtn: must<HTMLButtonElement>(container, "#gameover-save"),
     gameOverSkipBtn: must<HTMLButtonElement>(container, "#gameover-skip"),
+    skillsModalEl: must<HTMLDivElement>(container, "#skills-modal"),
+    skillsDialogEl: must<HTMLDivElement>(container, "#skills-dialog"),
+    skillsCloseBtn: must<HTMLButtonElement>(container, "#skills-close"),
+    skillsFormEl: must<HTMLFormElement>(container, "#skills-form"),
+    skillNameEl: must<HTMLInputElement>(container, "#skill-name"),
+    skillSequenceEl: must<HTMLInputElement>(container, "#skill-sequence"),
+    skillHotkeyEl: must<HTMLInputElement>(container, "#skill-hotkey"),
+    skillCancelEditBtn: must<HTMLButtonElement>(container, "#skill-cancel-edit"),
+    skillSaveBtn: must<HTMLButtonElement>(container, "#skill-save"),
+    skillFormMessageEl: must<HTMLParagraphElement>(container, "#skill-form-message"),
+    skillsListEl: must<HTMLUListElement>(container, "#skills-list"),
+    skillRunStatusEl: must<HTMLParagraphElement>(container, "#skill-run-status"),
   };
 }
 

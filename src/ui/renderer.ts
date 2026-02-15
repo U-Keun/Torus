@@ -12,6 +12,7 @@ interface ColorSpec {
 export class TorusRenderer {
   private status: GameStatus = "Paused";
   private scoreVisible = true;
+  private expandedScoreIndex: number | null = null;
 
   constructor(private readonly dom: TorusDom) {}
 
@@ -59,15 +60,36 @@ export class TorusRenderer {
     }
 
     this.dom.scoreListEl.innerHTML = entries
-      .map((row) => {
+      .map((row, index) => {
         const date = formatDate(row.date);
-        return `<li>
+        const skillMark = row.skillUsage.length > 0 ? " · Skill" : "";
+        const isExpanded = this.expandedScoreIndex === index;
+        const drawerBody = row.skillUsage.length === 0
+          ? '<li class="empty">No skill information recorded.</li>'
+          : row.skillUsage
+            .map((usage) => {
+              const command = usage.command ? usage.command : "-";
+              return `<li>
+                <div class="score-drawer-item-name">${escapeHtml(usage.name)}</div>
+                <div class="score-drawer-item-command">${escapeHtml(command)}</div>
+              </li>`;
+            })
+            .join("");
+        return `<li class="score-row${isExpanded ? " expanded" : ""}" data-score-index="${index}" role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}">
           <span class="name">${escapeHtml(row.user)}</span>
           <span class="point">${row.score}</span>
-          <span class="meta">Lv.${row.level} · ${date}</span>
+          <span class="meta">Lv.${row.level} · ${date}${skillMark}</span>
+          <div class="score-drawer">
+            <div class="score-drawer-label">Skills Used</div>
+            <ul class="score-drawer-list">${drawerBody}</ul>
+          </div>
         </li>`;
       })
       .join("");
+  }
+
+  public setExpandedScoreIndex(index: number | null): void {
+    this.expandedScoreIndex = index;
   }
 
   private renderBox(snapshot: GameSnapshot): void {

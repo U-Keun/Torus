@@ -2,8 +2,20 @@ import "./styles.css";
 import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { type Difficulty, type GameOverPayload, TorusGame } from "./game";
-import { createScoreboardStore, type ScoreEntry } from "./scoreboard";
+import { type Difficulty, type GameOverPayload, type GameSnapshot, TorusGame } from "./game";
+import { createScoreboardStore, type ScoreEntry, type SkillUsageEntry } from "./scoreboard";
+import { SkillRunner, type SkillRunnerState } from "./skills/runner";
+import { SkillStore } from "./skills/store";
+import {
+  DEFAULT_SKILL_STEP_DELAY_MS,
+  MAX_SKILL_NAME_LENGTH,
+  directionSequenceToLabel,
+  normalizeSkillHotkeyInput,
+  parseDirectionSequence,
+  skillHotkeyLabel,
+  type Direction,
+  type Skill,
+} from "./skills/types";
 import { mountTorusLayout } from "./ui/layout";
 import { type GameStatus, TorusRenderer } from "./ui/renderer";
 import { ThemeManager } from "./ui/theme";
@@ -19,6 +31,7 @@ const dom = mountTorusLayout(appRoot);
 const renderer = new TorusRenderer(dom);
 const themeManager = new ThemeManager(dom.themeChipEl);
 const scoreboardStore = createScoreboardStore();
+const skillStore = new SkillStore();
 const LAST_USER_STORAGE_KEY = "torus-last-user-v1";
 const DEVICE_BEST_STORAGE_KEY = "torus-device-best-v1";
 const SUBMIT_DB_PREF_STORAGE_KEY = "torus-submit-db-pref-v1";
@@ -27,6 +40,7 @@ const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 6;
 const PERSONAL_SUBMIT_BUTTON_LABEL = "Submit";
 const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
+const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
 let keyCardVisible = true;
@@ -37,16 +51,35 @@ let submittingPersonalBest = false;
 let preparingPersonalSubmit = false;
 let switchingScoreboardView = false;
 let scoreboardView: ScoreboardView = "global";
+let skills: Skill[] = skillStore.list();
+let editingSkillId: string | null = null;
+let activeGameStatus: GameStatus = "Paused";
+let displayedScoreboardEntries: ScoreEntry[] = [];
+let currentRunSkillUsage: SkillUsageEntry[] = [];
+let pendingGameOverSkillUsage: SkillUsageEntry[] = [];
+let expandedScoreIndex: number | null = null;
+let latestSnapshot: GameSnapshot | null = null;
+let autoHorizontalDirection: "left" | "right" = "right";
 
 const game = new TorusGame(
-  (snapshot) => renderer.render(snapshot),
+  (snapshot) => {
+    latestSnapshot = snapshot;
+    renderer.render(snapshot);
+  },
   (payload) => onGameOver(payload),
 );
+const skillRunner = new SkillRunner(dispatchMove, {
+  stepDelayMs: DEFAULT_SKILL_STEP_DELAY_MS,
+  onStateChange: syncSkillRunnerUi,
+});
 game.setLastUser(loadLastUser());
 
 themeManager.apply(0);
 renderer.setStatus("Paused");
 renderer.renderScoreboard([]);
+renderSkillsList();
+syncSkillRunnerUi(skillRunner.getState());
+setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
 syncScoreboardViewUi();
 void refreshScoreboard();
 setDifficulty(parseDifficulty(dom.difficultyEl.value));
@@ -56,6 +89,8 @@ bindUiControls();
 bindKeyboardControls();
 bindGameOverModal();
 bindSubmitConfirmModal();
+bindSkillsModal();
+bindScoreDrawerInteractions();
 void maybeCheckForUpdatesOnLaunch();
 
 window.addEventListener("resize", () => {
@@ -63,6 +98,7 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("beforeunload", () => {
+  skillRunner.cancelAll();
   game.destroy();
 });
 
@@ -91,6 +127,10 @@ function bindUiControls(): void {
     themeManager.cycle();
   });
 
+  dom.skillsBtn.addEventListener("click", () => {
+    toggleSkillsModal();
+  });
+
   dom.toggleScoreBtn.addEventListener("click", () => {
     renderer.toggleScoreboard();
   });
@@ -110,55 +150,55 @@ function bindUiControls(): void {
 
 function bindKeyboardControls(): void {
   const actionsByKey: Record<string, () => void> = {
-    arrowleft: () => game.moveLeft(),
-    j: () => game.moveLeft(),
-    arrowright: () => game.moveRight(),
-    l: () => game.moveRight(),
-    arrowup: () => game.moveUp(),
-    i: () => game.moveUp(),
-    arrowdown: () => game.moveDown(),
-    k: () => game.moveDown(),
-    n: () => startNewGame(),
-    r: () => resumeGame(),
-    p: () => pauseGame(),
-    q: () => resetGame(),
-    c: () => themeManager.cycle(),
-    s: () => renderer.toggleScoreboard(),
-    h: () => toggleKeyCard(),
-    "1": () => setDifficulty(1),
-    "2": () => setDifficulty(2),
-    "3": () => setDifficulty(3),
+    arrowleft: () => queueManualMove("left"),
+    j: () => queueManualMove("left"),
+    arrowright: () => queueManualMove("right"),
+    l: () => queueManualMove("right"),
+    arrowup: () => queueManualMove("up"),
+    i: () => queueManualMove("up"),
+    arrowdown: () => queueManualMove("down"),
+    k: () => queueManualMove("down"),
+    "1": () => startNewGame(),
+    "2": () => resumeGame(),
+    "3": () => pauseGame(),
+    "4": () => resetGame(),
+    "5": () => themeManager.cycle(),
+    "6": () => toggleSkillsModal(),
+    "7": () => renderer.toggleScoreboard(),
+    "8": () => toggleKeyCard(),
+    "9": () => cycleDifficulty(),
   };
 
   const actionsByCode: Record<string, () => void> = {
-    ArrowLeft: () => game.moveLeft(),
-    KeyJ: () => game.moveLeft(),
-    ArrowRight: () => game.moveRight(),
-    KeyL: () => game.moveRight(),
-    ArrowUp: () => game.moveUp(),
-    KeyI: () => game.moveUp(),
-    ArrowDown: () => game.moveDown(),
-    KeyK: () => game.moveDown(),
-    KeyN: () => startNewGame(),
-    KeyR: () => resumeGame(),
-    KeyP: () => pauseGame(),
-    KeyQ: () => resetGame(),
-    KeyC: () => themeManager.cycle(),
-    KeyS: () => renderer.toggleScoreboard(),
-    KeyH: () => toggleKeyCard(),
-    Digit1: () => setDifficulty(1),
-    Digit2: () => setDifficulty(2),
-    Digit3: () => setDifficulty(3),
-    Numpad1: () => setDifficulty(1),
-    Numpad2: () => setDifficulty(2),
-    Numpad3: () => setDifficulty(3),
+    ArrowLeft: () => queueManualMove("left"),
+    KeyJ: () => queueManualMove("left"),
+    ArrowRight: () => queueManualMove("right"),
+    KeyL: () => queueManualMove("right"),
+    ArrowUp: () => queueManualMove("up"),
+    KeyI: () => queueManualMove("up"),
+    ArrowDown: () => queueManualMove("down"),
+    KeyK: () => queueManualMove("down"),
+    Digit1: () => startNewGame(),
+    Digit2: () => resumeGame(),
+    Digit3: () => pauseGame(),
+    Digit4: () => resetGame(),
+    Digit5: () => themeManager.cycle(),
+    Digit6: () => toggleSkillsModal(),
+    Digit7: () => renderer.toggleScoreboard(),
+    Digit8: () => toggleKeyCard(),
+    Digit9: () => cycleDifficulty(),
+    Numpad1: () => startNewGame(),
+    Numpad2: () => resumeGame(),
+    Numpad3: () => pauseGame(),
+    Numpad4: () => resetGame(),
+    Numpad5: () => themeManager.cycle(),
+    Numpad6: () => toggleSkillsModal(),
+    Numpad7: () => renderer.toggleScoreboard(),
+    Numpad8: () => toggleKeyCard(),
+    Numpad9: () => cycleDifficulty(),
   };
 
   window.addEventListener("keydown", (event) => {
-    if (isFormTarget(event.target)) {
-      return;
-    }
-
     if (event.metaKey || event.ctrlKey || event.altKey) {
       return;
     }
@@ -173,7 +213,28 @@ function bindKeyboardControls(): void {
       return;
     }
 
+    if (isSkillsModalOpen()) {
+      if (event.key === "Escape" || (event.key === "6" && !isFormTarget(event.target))) {
+        closeSkillsModal();
+        event.preventDefault();
+      }
+      return;
+    }
+
+    if (isFormTarget(event.target)) {
+      return;
+    }
+
     if (pendingGameOverPayload) {
+      return;
+    }
+
+    const hotkeySkill = findSkillByHotkey(event.code);
+    if (hotkeySkill) {
+      if (!event.repeat) {
+        runSkillById(hotkeySkill.id, "hotkey");
+      }
+      event.preventDefault();
       return;
     }
 
@@ -190,6 +251,12 @@ function bindKeyboardControls(): void {
 function startNewGame(): void {
   closeGameOverModal();
   closeSubmitConfirmModal();
+  closeSkillsModal();
+  collapseExpandedScoreRow();
+  skillRunner.cancelAll();
+  autoHorizontalDirection = "right";
+  currentRunSkillUsage = [];
+  pendingGameOverSkillUsage = [];
   game.startNewGame(parseDifficulty(dom.difficultyEl.value));
   canResume = true;
   setStatus("Running");
@@ -204,6 +271,7 @@ function resumeGame(): void {
 }
 
 function pauseGame(): void {
+  skillRunner.cancelAll();
   game.pause();
   setStatus("Paused");
 }
@@ -211,6 +279,12 @@ function pauseGame(): void {
 function resetGame(): void {
   closeGameOverModal();
   closeSubmitConfirmModal();
+  closeSkillsModal();
+  collapseExpandedScoreRow();
+  skillRunner.cancelAll();
+  autoHorizontalDirection = "right";
+  currentRunSkillUsage = [];
+  pendingGameOverSkillUsage = [];
   game.reset();
   canResume = false;
   setStatus("Paused");
@@ -221,11 +295,99 @@ function setDifficulty(difficulty: Difficulty): void {
   game.setDifficulty(difficulty);
 }
 
+function cycleDifficulty(): void {
+  const current = parseDifficulty(dom.difficultyEl.value);
+  if (current === 1) {
+    setDifficulty(2);
+    return;
+  }
+  if (current === 2) {
+    setDifficulty(3);
+    return;
+  }
+  setDifficulty(1);
+}
+
 function setStatus(status: GameStatus): void {
+  activeGameStatus = status;
   renderer.setStatus(status);
 }
 
+function dispatchMove(direction: Direction): void {
+  if (direction === "left") {
+    game.moveLeft();
+    return;
+  }
+  if (direction === "right") {
+    game.moveRight();
+    return;
+  }
+  if (direction === "autoHorizontal") {
+    dispatchDynamicHorizontalMove("primary");
+    return;
+  }
+  if (direction === "autoHorizontalInverse") {
+    dispatchDynamicHorizontalMove("inverse");
+    return;
+  }
+  if (direction === "up") {
+    game.moveUp();
+    return;
+  }
+  game.moveDown();
+}
+
+function dispatchDynamicHorizontalMove(
+  variant: "primary" | "inverse",
+): void {
+  const snapshot = latestSnapshot;
+  if (!snapshot || snapshot.numCols <= 1) {
+    return;
+  }
+
+  let moveDirection = variant === "primary"
+    ? autoHorizontalDirection
+    : oppositeHorizontalDirection(autoHorizontalDirection);
+  if (isHorizontalDirectionBlocked(snapshot.polePos, snapshot.numCols, moveDirection)) {
+    autoHorizontalDirection = oppositeHorizontalDirection(autoHorizontalDirection);
+    moveDirection = variant === "primary"
+      ? autoHorizontalDirection
+      : oppositeHorizontalDirection(autoHorizontalDirection);
+  }
+
+  if (moveDirection === "left") {
+    game.moveLeft();
+    return;
+  }
+  game.moveRight();
+}
+
+function oppositeHorizontalDirection(
+  direction: "left" | "right",
+): "left" | "right" {
+  return direction === "left" ? "right" : "left";
+}
+
+function isHorizontalDirectionBlocked(
+  polePos: number,
+  numCols: number,
+  direction: "left" | "right",
+): boolean {
+  if (direction === "left") {
+    return polePos <= 0;
+  }
+  return polePos >= numCols - 1;
+}
+
+function queueManualMove(direction: Direction): void {
+  skillRunner.enqueueManualMove(direction);
+}
+
 function onGameOver(payload: GameOverPayload): void {
+  skillRunner.cancelAll();
+  closeSkillsModal();
+  collapseExpandedScoreRow();
+  pendingGameOverSkillUsage = cloneSkillUsageList(currentRunSkillUsage);
   setStatus("Game Over");
   canResume = false;
   pendingGameOverPayload = payload;
@@ -307,6 +469,469 @@ function bindSubmitConfirmModal(): void {
   });
 }
 
+function bindScoreDrawerInteractions(): void {
+  dom.scoreListEl.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const rowEl = target.closest("li[data-score-index]");
+    if (!(rowEl instanceof HTMLLIElement)) {
+      return;
+    }
+
+    const index = Number(rowEl.dataset.scoreIndex);
+    if (!Number.isInteger(index) || index < 0) {
+      return;
+    }
+
+    toggleExpandedScoreRow(index);
+  });
+
+  dom.scoreListEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+
+    const rowEl = target.closest("li[data-score-index]");
+    if (!(rowEl instanceof HTMLLIElement)) {
+      return;
+    }
+
+    const index = Number(rowEl.dataset.scoreIndex);
+    if (!Number.isInteger(index) || index < 0) {
+      return;
+    }
+
+    toggleExpandedScoreRow(index);
+    event.preventDefault();
+  });
+}
+
+function bindSkillsModal(): void {
+  dom.skillsCloseBtn.addEventListener("click", () => {
+    closeSkillsModal();
+  });
+
+  dom.skillsModalEl.addEventListener("click", (event) => {
+    if (event.target === dom.skillsModalEl) {
+      closeSkillsModal();
+    }
+  });
+
+  dom.skillsFormEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    saveSkillFromForm();
+  });
+
+  dom.skillHotkeyEl.addEventListener("keydown", (event) => {
+    if (event.key === "Backspace" || event.key === "Delete") {
+      dom.skillHotkeyEl.value = "";
+      event.preventDefault();
+      return;
+    }
+
+    if (event.key === "Escape") {
+      dom.skillHotkeyEl.blur();
+      event.preventDefault();
+      return;
+    }
+
+    const code = event.code.trim();
+    if (!code) {
+      return;
+    }
+
+    dom.skillHotkeyEl.value = code;
+    event.preventDefault();
+  });
+
+  dom.skillCancelEditBtn.addEventListener("click", () => {
+    resetSkillForm();
+    dom.skillNameEl.focus();
+  });
+
+  dom.skillsListEl.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    const button = target.closest("button[data-action][data-skill-id]");
+    if (!(button instanceof HTMLButtonElement)) {
+      return;
+    }
+    const skillId = button.dataset.skillId;
+    const action = button.dataset.action;
+    if (!skillId || !action) {
+      return;
+    }
+
+    if (action === "run") {
+      runSkillById(skillId);
+      return;
+    }
+
+    if (action === "edit") {
+      beginSkillEdit(skillId);
+      return;
+    }
+
+    if (action === "delete") {
+      deleteSkillById(skillId);
+    }
+  });
+}
+
+function toggleSkillsModal(): void {
+  if (isSkillsModalOpen()) {
+    closeSkillsModal();
+    return;
+  }
+  openSkillsModal();
+}
+
+function openSkillsModal(): void {
+  if (pendingGameOverPayload || isSubmitConfirmModalOpen()) {
+    return;
+  }
+  dom.skillsModalEl.classList.remove("hidden");
+  dom.skillNameEl.focus();
+}
+
+function closeSkillsModal(): void {
+  dom.skillsModalEl.classList.add("hidden");
+  resetSkillForm();
+}
+
+function isSkillsModalOpen(): boolean {
+  return !dom.skillsModalEl.classList.contains("hidden");
+}
+
+function toggleExpandedScoreRow(index: number): void {
+  if (index < 0 || index >= displayedScoreboardEntries.length) {
+    return;
+  }
+
+  expandedScoreIndex = expandedScoreIndex === index
+    ? null
+    : index;
+  renderer.setExpandedScoreIndex(expandedScoreIndex);
+  applyExpandedScoreRowState();
+}
+
+function collapseExpandedScoreRow(): void {
+  if (expandedScoreIndex === null) {
+    return;
+  }
+  expandedScoreIndex = null;
+  renderer.setExpandedScoreIndex(expandedScoreIndex);
+  applyExpandedScoreRowState();
+}
+
+function renderDisplayedScoreboard(): void {
+  renderer.setExpandedScoreIndex(expandedScoreIndex);
+  renderer.renderScoreboard(displayedScoreboardEntries);
+  syncScoreRowAccessibility();
+  applyExpandedScoreRowState();
+}
+
+function applyExpandedScoreRowState(): void {
+  const rows = dom.scoreListEl.querySelectorAll<HTMLLIElement>("li.score-row");
+  rows.forEach((row) => {
+    const index = Number(row.dataset.scoreIndex);
+    const isExpanded = (
+      Number.isInteger(index) &&
+      expandedScoreIndex === index
+    );
+    row.classList.toggle("expanded", isExpanded);
+    row.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+  });
+}
+
+function saveSkillFromForm(): void {
+  const name = dom.skillNameEl.value.trim().slice(0, MAX_SKILL_NAME_LENGTH);
+  if (name.length === 0) {
+    setSkillFormMessage("Skill name is required.", "warn");
+    dom.skillNameEl.focus();
+    return;
+  }
+
+  let sequence: Direction[] = [];
+  try {
+    sequence = parseDirectionSequence(dom.skillSequenceEl.value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid direction sequence.";
+    setSkillFormMessage(message, "warn");
+    dom.skillSequenceEl.focus();
+    return;
+  }
+
+  let hotkey: string | null = null;
+  try {
+    hotkey = normalizeSkillHotkeyInput(dom.skillHotkeyEl.value);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid hotkey.";
+    setSkillFormMessage(message, "warn");
+    dom.skillHotkeyEl.focus();
+    return;
+  }
+
+  if (hotkey && skills.some((entry) => entry.hotkey === hotkey && entry.id !== editingSkillId)) {
+    setSkillFormMessage(`"${skillHotkeyLabel(hotkey)}" is already used by another skill.`, "warn");
+    dom.skillHotkeyEl.focus();
+    return;
+  }
+
+  try {
+    if (editingSkillId) {
+      const updated = skillStore.update(editingSkillId, name, sequence, hotkey);
+      skills = skillStore.list();
+      renderSkillsList();
+      const hotkeyMessage = updated.hotkey ? ` / hotkey ${skillHotkeyLabel(updated.hotkey)}` : "";
+      setSkillFormMessage(
+        `Updated "${updated.name}" (${updated.sequence.length} steps${hotkeyMessage}).`,
+        "good",
+      );
+      resetSkillForm(true);
+      dom.skillNameEl.focus();
+      return;
+    }
+
+    const created = skillStore.create(name, sequence, hotkey);
+    skills = skillStore.list();
+    renderSkillsList();
+    const hotkeyMessage = created.hotkey ? ` / hotkey ${skillHotkeyLabel(created.hotkey)}` : "";
+    setSkillFormMessage(
+      `Saved "${created.name}" (${created.sequence.length} steps${hotkeyMessage}).`,
+      "good",
+    );
+    resetSkillForm(true);
+    dom.skillNameEl.focus();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to save skill.";
+    if (message === "Skill not found.") {
+      resetSkillForm(true);
+    }
+    setSkillFormMessage(message, "warn");
+  }
+}
+
+function beginSkillEdit(skillId: string): void {
+  const skill = skills.find((entry) => entry.id === skillId);
+  if (!skill) {
+    setSkillFormMessage("Skill not found.", "warn");
+    return;
+  }
+
+  editingSkillId = skill.id;
+  dom.skillNameEl.value = skill.name;
+  dom.skillSequenceEl.value = directionSequenceToLabel(skill.sequence);
+  dom.skillHotkeyEl.value = skillHotkeyLabel(skill.hotkey) === "-"
+    ? ""
+    : skillHotkeyLabel(skill.hotkey);
+  dom.skillSaveBtn.textContent = "Update Skill";
+  dom.skillCancelEditBtn.hidden = false;
+  setSkillFormMessage(`Editing "${skill.name}".`, "info");
+  dom.skillNameEl.focus();
+}
+
+function runSkillById(skillId: string, source: "ui" | "hotkey" = "ui"): void {
+  const skill = skills.find((entry) => entry.id === skillId);
+  if (!skill) {
+    if (source === "ui" || isSkillsModalOpen()) {
+      setSkillFormMessage("Skill not found.", "warn");
+    }
+    return;
+  }
+
+  const started = skillRunner.runSkill(skill);
+  if (!started) {
+    if (source === "ui" || isSkillsModalOpen()) {
+      setSkillFormMessage("Another sequence is still running.", "warn");
+    }
+    return;
+  }
+
+  if (source === "ui" || isSkillsModalOpen()) {
+    setSkillFormMessage(`Running "${skill.name}".`, "good");
+  }
+  markSkillUsed(skill);
+  syncSkillRunnerUi(skillRunner.getState());
+}
+
+function findSkillByHotkey(code: string): Skill | null {
+  if (!code) {
+    return null;
+  }
+  return skills.find((skill) => skill.hotkey === code) ?? null;
+}
+
+function markSkillUsed(skill: Skill): void {
+  if (activeGameStatus !== "Running") {
+    return;
+  }
+
+  const name = skill.name.trim().slice(0, 20);
+  if (name.length === 0) {
+    return;
+  }
+
+  const hotkey = skill.hotkey ? skill.hotkey.trim().slice(0, 16) : null;
+  const command = directionSequenceToLabel(skill.sequence).trim().slice(0, 120);
+  const exists = currentRunSkillUsage.some((entry) => (
+    entry.name === name &&
+    entry.hotkey === hotkey &&
+    entry.command === command
+  ));
+  if (exists) {
+    return;
+  }
+
+  currentRunSkillUsage.push({ name, hotkey, command });
+}
+
+function deleteSkillById(skillId: string): void {
+  const skill = skills.find((entry) => entry.id === skillId);
+  if (!skill) {
+    return;
+  }
+  const wasEditing = editingSkillId === skillId;
+
+  skillStore.remove(skillId);
+  skills = skillStore.list();
+  renderSkillsList();
+  if (wasEditing) {
+    resetSkillForm(true);
+  }
+  setSkillFormMessage(`Deleted "${skill.name}".`, "good");
+}
+
+function resetSkillForm(keepMessage = false): void {
+  editingSkillId = null;
+  dom.skillNameEl.value = "";
+  dom.skillSequenceEl.value = "";
+  dom.skillHotkeyEl.value = "";
+  dom.skillSaveBtn.textContent = "Save Skill";
+  dom.skillCancelEditBtn.hidden = true;
+  if (!keepMessage) {
+    setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
+  }
+}
+
+function renderSkillsList(): void {
+  const shouldAnimateResize = isSkillsModalOpen();
+  const previousHeight = shouldAnimateResize
+    ? dom.skillsDialogEl.getBoundingClientRect().height
+    : 0;
+  const state = skillRunner.getState();
+  if (skills.length === 0) {
+    dom.skillsListEl.innerHTML = '<li class="skills-empty">No skills yet.</li>';
+    if (shouldAnimateResize) {
+      animateSkillsDialogResize(previousHeight);
+    }
+    return;
+  }
+
+  dom.skillsListEl.innerHTML = skills
+    .map((skill) => {
+      const sequence = directionSequenceToLabel(skill.sequence);
+      const hotkeyLabel = skillHotkeyLabel(skill.hotkey);
+      const hotkeyMeta = skill.hotkey ? ` \u00b7 Key ${escapeHtml(hotkeyLabel)}` : "";
+      const runDisabledAttr = state.isProcessing ? "disabled" : "";
+      const editDisabledAttr = state.isProcessing ? "disabled" : "";
+      return `<li class="skill-row">
+        <div class="skill-row-top">
+          <span class="skill-name">${escapeHtml(skill.name)}</span>
+          <span class="skill-step">${skill.sequence.length} steps${hotkeyMeta}</span>
+        </div>
+        <div class="skill-sequence">${escapeHtml(sequence)}</div>
+        <div class="skill-actions">
+          <button type="button" data-action="run" data-skill-id="${escapeHtml(skill.id)}" ${runDisabledAttr}>Run</button>
+          <button type="button" data-action="edit" data-skill-id="${escapeHtml(skill.id)}" ${editDisabledAttr}>Edit</button>
+          <button type="button" data-action="delete" data-skill-id="${escapeHtml(skill.id)}">Delete</button>
+        </div>
+      </li>`;
+    })
+    .join("");
+
+  if (shouldAnimateResize) {
+    animateSkillsDialogResize(previousHeight);
+  }
+}
+
+function animateSkillsDialogResize(previousHeight: number): void {
+  if (previousHeight <= 0) {
+    return;
+  }
+
+  const dialog = dom.skillsDialogEl;
+  const nextHeight = dialog.getBoundingClientRect().height;
+  if (Math.abs(nextHeight - previousHeight) < 2) {
+    return;
+  }
+
+  dialog.style.height = `${previousHeight}px`;
+  dialog.style.transition = "height 320ms cubic-bezier(0.22, 1, 0.36, 1)";
+  void dialog.offsetWidth;
+  dialog.style.height = `${nextHeight}px`;
+
+  window.setTimeout(() => {
+    dialog.style.height = "";
+    dialog.style.transition = "";
+  }, 340);
+}
+
+function syncSkillRunnerUi(state: SkillRunnerState): void {
+  const statuses: string[] = [];
+  if (state.isSkillRunning && state.activeSkillName) {
+    statuses.push(`Running "${state.activeSkillName}" (${state.remainingSkillMoves} left)`);
+  }
+  if (state.queuedManualMoves > 0) {
+    statuses.push(`Manual queue: ${state.queuedManualMoves}`);
+  }
+  if (statuses.length === 0) {
+    statuses.push("Idle");
+  }
+
+  dom.skillRunStatusEl.textContent = statuses.join(" | ");
+  dom.skillRunStatusEl.className = "skills-run-status";
+  if (state.isSkillRunning) {
+    dom.skillRunStatusEl.classList.add("active");
+  } else if (state.queuedManualMoves > 0) {
+    dom.skillRunStatusEl.classList.add("queue");
+  }
+
+  const runButtons = dom.skillsListEl.querySelectorAll<HTMLButtonElement>('button[data-action="run"]');
+  runButtons.forEach((button) => {
+    button.disabled = state.isProcessing;
+  });
+  const editButtons = dom.skillsListEl.querySelectorAll<HTMLButtonElement>('button[data-action="edit"]');
+  editButtons.forEach((button) => {
+    button.disabled = state.isProcessing;
+  });
+}
+
+function setSkillFormMessage(
+  message: string,
+  tone: "info" | "good" | "warn" = "info",
+): void {
+  dom.skillFormMessageEl.textContent = message;
+  dom.skillFormMessageEl.className = "skills-form-message";
+  if (tone === "good") {
+    dom.skillFormMessageEl.classList.add("good");
+    return;
+  }
+  if (tone === "warn") {
+    dom.skillFormMessageEl.classList.add("warn");
+  }
+}
+
 function openGameOverModal(payload: GameOverPayload): void {
   closeSubmitConfirmModal();
   const lastUser = game.getLastUser().trim();
@@ -328,6 +953,7 @@ function openGameOverModal(payload: GameOverPayload): void {
 function closeGameOverModal(): void {
   savingGameOver = false;
   pendingGameOverPayload = null;
+  pendingGameOverSkillUsage = [];
   dom.gameOverSaveBtn.disabled = false;
   dom.gameOverSkipBtn.disabled = false;
   dom.gameOverModalEl.classList.add("hidden");
@@ -360,6 +986,7 @@ async function saveGameOverScore(): Promise<void> {
     score: pendingGameOverPayload.score,
     level: pendingGameOverPayload.level,
     date: new Date().toISOString(),
+    skillUsage: cloneSkillUsageList(pendingGameOverSkillUsage),
   };
   await scoreboardStore.addPersonal(entry);
   const best = loadDeviceBestEntry();
@@ -381,6 +1008,7 @@ async function saveGameOverScore(): Promise<void> {
     closeGameOverModal();
     game.reset();
     canResume = false;
+    currentRunSkillUsage = [];
     setStatus("Paused");
   } finally {
     if (!dom.gameOverModalEl.classList.contains("hidden")) {
@@ -402,7 +1030,14 @@ async function refreshScoreboard(): Promise<void> {
     const rows = scoreboardView === "personal"
       ? await scoreboardStore.topPersonal(10)
       : await scoreboardStore.top(10);
-    renderer.renderScoreboard(rows);
+    displayedScoreboardEntries = rows.map((row) => cloneScoreEntry(row));
+    if (
+      expandedScoreIndex !== null &&
+      expandedScoreIndex >= displayedScoreboardEntries.length
+    ) {
+      expandedScoreIndex = null;
+    }
+    renderDisplayedScoreboard();
   } finally {
     refreshingScoreboard = false;
   }
@@ -410,8 +1045,15 @@ async function refreshScoreboard(): Promise<void> {
 
 async function refreshGlobalTop10Data(): Promise<void> {
   const globalRows = await scoreboardStore.top(10);
+  displayedScoreboardEntries = globalRows.map((row) => cloneScoreEntry(row));
+  if (
+    expandedScoreIndex !== null &&
+    expandedScoreIndex >= displayedScoreboardEntries.length
+  ) {
+    expandedScoreIndex = null;
+  }
   if (scoreboardView === "global") {
-    renderer.renderScoreboard(globalRows);
+    renderDisplayedScoreboard();
   }
 }
 
@@ -419,6 +1061,8 @@ async function openSubmitConfirmModal(): Promise<void> {
   if (isSubmitConfirmModalOpen() || preparingPersonalSubmit || submittingPersonalBest) {
     return;
   }
+  closeSkillsModal();
+  collapseExpandedScoreRow();
 
   pendingSubmitEntry = null;
   preparingPersonalSubmit = true;
@@ -519,6 +1163,7 @@ async function toggleScoreboardView(): Promise<void> {
     await delay(120);
 
     scoreboardView = scoreboardView === "global" ? "personal" : "global";
+    expandedScoreIndex = null;
     syncScoreboardViewUi();
     await refreshScoreboard();
 
@@ -538,6 +1183,7 @@ async function toggleScoreboardView(): Promise<void> {
 function syncScoreboardViewUi(): void {
   const personalMode = scoreboardView === "personal";
   dom.scoreTitleEl.textContent = personalMode ? PERSONAL_SCORE_TITLE : GLOBAL_SCORE_TITLE;
+  dom.scoreListEl.classList.toggle("global-mode", !personalMode);
   dom.personalScoreBtn.classList.toggle("active", personalMode);
   dom.personalScoreBtn.setAttribute("aria-pressed", personalMode ? "true" : "false");
   dom.personalScoreBtn.textContent = personalMode ? "Global" : "Personal";
@@ -545,6 +1191,78 @@ function syncScoreboardViewUi(): void {
     dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
     dom.submitPersonalBtn.disabled = false;
   }
+}
+
+function syncScoreRowAccessibility(): void {
+  const rows = dom.scoreListEl.querySelectorAll<HTMLLIElement>("li.score-row");
+  rows.forEach((row) => {
+    row.setAttribute("tabindex", "0");
+    row.setAttribute("role", "button");
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/\"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function normalizeSkillUsage(raw: unknown): SkillUsageEntry[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  return raw
+    .filter((entry): entry is SkillUsageEntry => {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+      const row = entry as Record<string, unknown>;
+      return (
+        typeof row.name === "string" &&
+        (typeof row.hotkey === "string" || row.hotkey === null) &&
+        (
+          typeof row.command === "string" ||
+          row.command === null ||
+          typeof row.command === "undefined"
+        )
+      );
+    })
+    .map((entry) => ({
+      name: entry.name.trim().slice(0, 20),
+      hotkey: entry.hotkey ? entry.hotkey.trim().slice(0, 16) : null,
+      command: normalizeSkillCommand(entry.command),
+    }))
+    .filter((entry) => entry.name.length > 0)
+    .slice(0, 20);
+}
+
+function cloneSkillUsageList(usages: ReadonlyArray<SkillUsageEntry>): SkillUsageEntry[] {
+  return usages.map((usage) => ({
+    name: usage.name,
+    hotkey: usage.hotkey,
+    command: usage.command,
+  }));
+}
+
+function cloneScoreEntry(entry: ScoreEntry): ScoreEntry {
+  return {
+    user: entry.user,
+    score: entry.score,
+    level: entry.level,
+    date: entry.date,
+    skillUsage: cloneSkillUsageList(entry.skillUsage),
+  };
+}
+
+function normalizeSkillCommand(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const value = raw.trim().slice(0, 120);
+  return value.length > 0 ? value : null;
 }
 
 function loadLastUser(): string {
@@ -613,6 +1331,7 @@ function loadDeviceBestEntry(): ScoreEntry | null {
       score: candidate.score,
       level: candidate.level,
       date: candidate.date,
+      skillUsage: normalizeSkillUsage(candidate.skillUsage),
     };
   } catch {
     return null;
@@ -647,6 +1366,7 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
     score: payload.score,
     level: payload.level,
     date: new Date().toISOString(),
+    skillUsage: [],
   };
   const isDeviceBest = isBetterThanBest(candidate, best);
 

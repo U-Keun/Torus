@@ -22,7 +22,9 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
   - `2`: Half-glazed + Rotate
   - `3`: Half-glazed + Flip
 - Theme switching and compact single-screen desktop layout.
+- Custom one-shot `Skills` (create/run/edit/delete directional sequences, including edge-aware dynamic pair `(`/`)`).
 - `GLOBAL TOP 10` and `PERSONAL TOP 10` scoreboard views.
+- Click a score row (`GLOBAL`/`PERSONAL`) to slide open used skill details (skill name + command).
 - Optional online score submission (Supabase).
 - Per-install UUID in Tauri backend: one online record per device, updated only when score is better.
 - Local fallback cache if network/Supabase is unavailable.
@@ -30,14 +32,16 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
 ## Controls
 
 - Move: `Arrow keys` or `j/l/i/k`
-- New game: `n`
-- Resume: `r`
-- Pause: `p`
-- Reset: `q`
-- Theme: `c`
-- Toggle scoreboard: `s`
-- Toggle key card: `h`
-- Difficulty: `1/2/3`
+- New game: `1`
+- Resume: `2`
+- Pause: `3`
+- Reset: `4`
+- Theme: `5`
+- Skills: `6`
+- Toggle scoreboard: `7`
+- Toggle key card: `8`
+- Difficulty cycle: `9` (`1 -> 2 -> 3 -> 1`)
+- Skill hotkeys: set per skill in `Skills` modal by pressing a key (duplicate registrations are blocked)
 
 Keyboard input uses both `event.key` and `event.code`, so game controls still work in non-English IME layouts (for example Korean input mode).
 
@@ -88,6 +92,7 @@ The schema includes:
 - `scores.client_uuid` (`text`, unique)
 - `scores.score` (`integer`)
 - `scores.level` (`integer`)
+- `scores.skill_usage` (`jsonb`, default `[]`)
 - `scores.created_at` (`timestamptz`)
 
 Ranking query order is:
@@ -102,6 +107,7 @@ Default fetch size is top 10.
 
 - Personal records are always stored locally.
 - Online submission is optional.
+- Submitted scores include used skill metadata (`skill_usage`).
 - Tauri backend generates and stores a UUID at first run (`device-uuid-v1.txt` in app data dir).
 - When submitting online:
   - If UUID does not exist in DB: insert.

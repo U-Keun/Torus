@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -12,6 +12,18 @@ const CACHE_MAX_ENTRIES: usize = 300;
 const DEFAULT_TOP_LIMIT: usize = 10;
 const MAX_TOP_LIMIT: usize = 100;
 const HTTP_TIMEOUT_SECONDS: u64 = 8;
+const MAX_SKILL_USAGE_ITEMS: usize = 20;
+const MAX_SKILL_NAME_LEN: usize = 20;
+const MAX_SKILL_HOTKEY_LEN: usize = 16;
+const MAX_SKILL_COMMAND_LEN: usize = 120;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkillUsage {
+    pub name: String,
+    pub hotkey: Option<String>,
+    #[serde(default)]
+    pub command: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScoreEntry {
@@ -19,6 +31,8 @@ pub struct ScoreEntry {
     pub score: i64,
     pub level: i64,
     pub date: String,
+    #[serde(rename = "skillUsage", default)]
+    pub skill_usage: Vec<SkillUsage>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -27,6 +41,8 @@ struct ScoreRow {
     score: i64,
     level: i64,
     created_at: String,
+    #[serde(default)]
+    skill_usage: Option<Vec<SkillUsage>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -36,6 +52,7 @@ struct SubmitScorePayload<'a> {
     level: i64,
     created_at: &'a str,
     client_uuid: &'a str,
+    skill_usage: &'a [SkillUsage],
 }
 
 #[derive(Debug, Clone)]
@@ -126,11 +143,58 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
         return Err("score entry user is empty".into());
     }
 
+    let mut seen = HashSet::<String>::new();
+    let mut skill_usage: Vec<SkillUsage> = Vec::new();
+    for usage in entry.skill_usage.into_iter().take(MAX_SKILL_USAGE_ITEMS) {
+        let name = usage
+            .name
+            .trim()
+            .chars()
+            .take(MAX_SKILL_NAME_LEN)
+            .collect::<String>();
+        if name.is_empty() {
+            continue;
+        }
+
+        let hotkey = usage
+            .hotkey
+            .map(|value| value.trim().chars().take(MAX_SKILL_HOTKEY_LEN).collect::<String>())
+            .and_then(|value| if value.is_empty() { None } else { Some(value) });
+
+        let command = usage
+            .command
+            .map(|value| {
+                value
+                    .trim()
+                    .chars()
+                    .take(MAX_SKILL_COMMAND_LEN)
+                    .collect::<String>()
+            })
+            .and_then(|value| if value.is_empty() { None } else { Some(value) });
+
+        let key = format!(
+            "{}::{}::{}",
+            name,
+            hotkey.clone().unwrap_or_default(),
+            command.clone().unwrap_or_default()
+        );
+        if !seen.insert(key) {
+            continue;
+        }
+
+        skill_usage.push(SkillUsage {
+            name,
+            hotkey,
+            command,
+        });
+    }
+
     Ok(ScoreEntry {
         user,
         score: entry.score.max(0),
         level: entry.level.max(0),
         date: entry.date.trim().to_string(),
+        skill_usage,
     })
 }
 
@@ -209,9 +273,10 @@ fn sort_and_dedupe(entries: &mut Vec<ScoreEntry>) {
 
     let mut deduped: HashMap<String, ScoreEntry> = HashMap::new();
     for entry in entries.drain(..) {
+        let skill_usage_key = serde_json::to_string(&entry.skill_usage).unwrap_or_default();
         let key = format!(
-            "{}::{}::{}::{}",
-            entry.user, entry.score, entry.level, entry.date
+            "{}::{}::{}::{}::{}",
+            entry.user, entry.score, entry.level, entry.date, skill_usage_key
         );
         deduped.entry(key).or_insert(entry);
     }
@@ -248,7 +313,7 @@ async fn fetch_remote_scores(
     let request = client
         .get(endpoint)
         .query(&[
-            ("select", "player_name,score,level,created_at"),
+            ("select", "player_name,score,level,created_at,skill_usage"),
             ("order", "score.desc,level.desc,created_at.desc"),
             ("limit", &limit.to_string()),
         ])
@@ -278,6 +343,7 @@ async fn fetch_remote_scores(
             score: row.score,
             level: row.level,
             date: row.created_at,
+            skill_usage: row.skill_usage.unwrap_or_default(),
         })
         .collect())
 }
@@ -307,7 +373,7 @@ async fn fetch_remote_score_by_uuid(
     let response = client
         .get(endpoint)
         .query(&[
-            ("select", "player_name,score,level,created_at"),
+            ("select", "player_name,score,level,created_at,skill_usage"),
             ("client_uuid", filter.as_str()),
             ("limit", "1"),
         ])
@@ -335,6 +401,7 @@ async fn fetch_remote_score_by_uuid(
         score: row.score,
         level: row.level,
         date: row.created_at,
+        skill_usage: row.skill_usage.unwrap_or_default(),
     }))
 }
 
@@ -350,6 +417,7 @@ async fn insert_remote_score(
         level: entry.level,
         created_at: &entry.date,
         client_uuid,
+        skill_usage: &entry.skill_usage,
     };
 
     let client = create_http_client()?;
@@ -385,6 +453,7 @@ async fn update_remote_score(
         level: entry.level,
         created_at: &entry.date,
         client_uuid,
+        skill_usage: &entry.skill_usage,
     };
 
     let client = create_http_client()?;
