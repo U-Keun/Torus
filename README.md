@@ -13,9 +13,7 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
 ## Download (Windows)
 
 - Latest release page: [Torus Releases](https://github.com/U-Keun/Torus/releases/latest)
-- Direct installer (`v1.2`):
-  - [Torus_1.1.1_x64-setup.exe](https://github.com/U-Keun/Torus/releases/download/v1.2/Torus_1.1.1_x64-setup.exe)
-  - [Torus_1.1.1_x64_en-US.msi](https://github.com/U-Keun/Torus/releases/download/v1.2/Torus_1.1.1_x64_en-US.msi)
+- Direct installers are attached in each release asset list.
 
 ## Features
 
@@ -27,8 +25,11 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
   - `3`: Half-glazed + Flip
 - Theme switching and compact single-screen desktop layout.
 - Custom one-shot `Skills` (create/run/edit/delete directional sequences, including edge-aware dynamic pair `(`/`)`).
-- `GLOBAL TOP 10` and `PERSONAL TOP 10` scoreboard views.
-- Click a score row (`GLOBAL`/`PERSONAL`) to slide open used skill details (skill name + command).
+- `GLOBAL TOP 10`, `DAILY CHALLENGE TOP 10`, and `PERSONAL TOP 10` scoreboard views.
+- Own records are marked with `Me` tag in `GLOBAL` and `DAILY`.
+- Click a score row to slide open used skill details (skill name + command).
+- Import skills from expanded `GLOBAL`/`DAILY` records directly into personal skill set.
+- `Keys` card supports two pages: basic controls and current personal skill hotkeys/sequences.
 - Optional online score submission (Supabase).
 - Per-install UUID in Tauri backend: one online record per device, updated only when score is better.
 - Local fallback cache if network/Supabase is unavailable.
@@ -43,7 +44,7 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
 - Theme: `5`
 - Skills: `6`
 - Toggle scoreboard: `7`
-- Toggle key card: `8`
+- Key card cycle: `8` (`Page 1 -> Page 2 -> Hide -> Page 1`)
 - Difficulty cycle: `9` (`1 -> 2 -> 3 -> 1`)
 - Skill hotkeys: set per skill in `Skills` modal by pressing a key (duplicate registrations are blocked)
 
