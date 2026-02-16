@@ -240,6 +240,18 @@ code {
   font-size: clamp(0.75rem, 1vh, 0.84rem);
 }
 
+.challenge-info {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 9px;
+  border-radius: 9px;
+  border: 1px dashed rgba(157, 225, 255, 0.38);
+  background: rgba(9, 27, 45, 0.68);
+  color: #c6e9ff;
+  font-size: clamp(0.7rem, 0.95vh, 0.8rem);
+  white-space: nowrap;
+}
+
 select,
 button {
   border: 1px solid var(--border);
@@ -315,6 +327,7 @@ button:active {
 .score-actions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
 }
 

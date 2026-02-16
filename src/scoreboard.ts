@@ -25,6 +25,8 @@ export interface ScoreboardStore {
   add(entry: ScoreEntry): Promise<void>;
   topPersonal(limit?: number): Promise<ScoreEntry[]>;
   addPersonal(entry: ScoreEntry): Promise<void>;
+  topDaily(challengeKey: string, limit?: number): Promise<ScoreEntry[]>;
+  addDaily(challengeKey: string, entry: ScoreEntry): Promise<void>;
 }
 
 class LocalEntryStore {
@@ -158,6 +160,7 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
   constructor(
     private readonly globalStore: LocalEntryStore,
     private readonly personalStore: LocalEntryStore,
+    private readonly resolveDailyStore: DailyStoreResolver,
   ) {}
 
   public top(limit = 10): Promise<ScoreEntry[]> {
@@ -175,12 +178,21 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
   public addPersonal(entry: ScoreEntry): Promise<void> {
     return this.personalStore.add(entry);
   }
+
+  public topDaily(challengeKey: string, limit = 10): Promise<ScoreEntry[]> {
+    return this.resolveDailyStore(challengeKey).top(limit);
+  }
+
+  public addDaily(challengeKey: string, entry: ScoreEntry): Promise<void> {
+    return this.resolveDailyStore(challengeKey).add(entry);
+  }
 }
 
 class TauriScoreboardStore implements ScoreboardStore {
   constructor(
     private readonly globalStore: LocalEntryStore,
     private readonly personalStore: LocalEntryStore,
+    private readonly resolveDailyStore: DailyStoreResolver,
     private readonly supabaseUrl: string,
     private readonly supabaseAnonKey: string,
   ) {}
@@ -228,6 +240,14 @@ class TauriScoreboardStore implements ScoreboardStore {
 
   public addPersonal(entry: ScoreEntry): Promise<void> {
     return this.personalStore.add(entry);
+  }
+
+  public topDaily(challengeKey: string, limit = 10): Promise<ScoreEntry[]> {
+    return this.resolveDailyStore(challengeKey).top(limit);
+  }
+
+  public addDaily(challengeKey: string, entry: ScoreEntry): Promise<void> {
+    return this.resolveDailyStore(challengeKey).add(entry);
   }
 
   private isScoreEntry(entry: unknown): entry is ScoreEntry {
@@ -286,15 +306,22 @@ class TauriScoreboardStore implements ScoreboardStore {
 export function createScoreboardStore(): ScoreboardStore {
   const globalStore = new LocalEntryStore("torus-scores-v1", window.localStorage, 100);
   const personalStore = new LocalEntryStore("torus-personal-scores-v1", window.localStorage, 100);
+  const resolveDailyStore = createDailyStoreResolver(window.localStorage, 100);
   const supabaseUrl = readEnv("VITE_SUPABASE_URL");
   const supabaseAnonKey = readEnv("VITE_SUPABASE_ANON_KEY");
 
   if (!supabaseUrl || !supabaseAnonKey) {
     console.info("Supabase env is not configured. Global score sync is disabled.");
-    return new LocalOnlyScoreboardStore(globalStore, personalStore);
+    return new LocalOnlyScoreboardStore(globalStore, personalStore, resolveDailyStore);
   }
 
-  return new TauriScoreboardStore(globalStore, personalStore, supabaseUrl, supabaseAnonKey);
+  return new TauriScoreboardStore(
+    globalStore,
+    personalStore,
+    resolveDailyStore,
+    supabaseUrl,
+    supabaseAnonKey,
+  );
 }
 
 function readEnv(key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY"): string {
@@ -311,4 +338,35 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
   }
   const value = raw.trim().slice(0, 120);
   return value.length > 0 ? value : null;
+}
+
+type DailyStoreResolver = (challengeKey: string) => LocalEntryStore;
+
+function createDailyStoreResolver(
+  storage: Storage,
+  maxEntries: number,
+): DailyStoreResolver {
+  const cache = new Map<string, LocalEntryStore>();
+  return (challengeKey: string) => {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const existing = cache.get(normalized);
+    if (existing) {
+      return existing;
+    }
+    const created = new LocalEntryStore(
+      `torus-daily-scores-v1:${normalized}`,
+      storage,
+      maxEntries,
+    );
+    cache.set(normalized, created);
+    return created;
+  };
+}
+
+function normalizeChallengeKey(challengeKey: string): string {
+  const trimmed = challengeKey.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    return trimmed;
+  }
+  return "unknown";
 }
