@@ -6,12 +6,16 @@
 
 Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus` game from the [newbiemacs project](https://github.com/jangsookim/newbiemacs).
 
+## Download (macOS)
+
+- Mac App Store: [T@rus](https://apps.apple.com/kr/app/t-rus/id6759029986?mt=12)
+
 ## Download (Windows)
 
 - Latest release page: [Torus Releases](https://github.com/U-Keun/Torus/releases/latest)
-- Direct installer (`v1.0.1`):
-  - [Torus_1.0.1_x64-setup.exe](https://github.com/U-Keun/Torus/releases/download/v1.0.1/Torus_1.0.1_x64-setup.exe)
-  - [Torus_1.0.1_x64_en-US.msi](https://github.com/U-Keun/Torus/releases/download/v1.0.1/Torus_1.0.1_x64_en-US.msi)
+- Direct installer (`v1.2`):
+  - [Torus_1.1.1_x64-setup.exe](https://github.com/U-Keun/Torus/releases/download/v1.2/Torus_1.1.1_x64-setup.exe)
+  - [Torus_1.1.1_x64_en-US.msi](https://github.com/U-Keun/Torus/releases/download/v1.2/Torus_1.1.1_x64_en-US.msi)
 
 ## Features
 
