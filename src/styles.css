@@ -26,7 +26,24 @@
   --ascii-cell-width: 4.9ch;
   --ascii-cell-height: calc(var(--ascii-font-size) + 10px);
   --cell-gap: clamp(1px, 0.25vh, 3px);
-  --shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
+  --shadow: 0 0 0 rgba(0, 0, 0, 0);
+  --ease-emphasized: cubic-bezier(0.22, 1, 0.36, 1);
+  --motion-xxs: 0.14s;
+  --motion-xs: 0.15s;
+  --motion-s: 0.16s;
+  --motion-sm: 0.18s;
+  --motion-md: 0.2s;
+  --motion-lg: 0.24s;
+  --motion-xl: 0.28s;
+  --motion-2xl: 0.3s;
+  --motion-3xl: 0.34s;
+  --motion-4xl: 0.38s;
+  --motion-5xl: 0.48s;
+  --motion-loading-dots: 1.2s;
+  --panel-item-border-subtle: rgba(255, 255, 255, 0.1);
+  --panel-item-border-default: rgba(255, 255, 255, 0.12);
+  --panel-item-bg-default: rgba(7, 20, 32, 0.6);
+  --panel-item-bg-contrast: rgba(2, 11, 20, 0.7);
 
   font-family: "Azeret Mono", "IBM Plex Sans KR", "JetBrains Mono", "Fira Code", monospace;
   font-size: 15px;
@@ -218,7 +235,7 @@ code {
   width: 0;
   background: linear-gradient(90deg, #4bb3fd 0%, #f7ce56 56%, #ff784f 100%);
   box-shadow: 0 0 20px rgba(247, 206, 86, 0.35);
-  transition: width 0.18s linear;
+  transition: width var(--motion-sm) linear;
 }
 
 .controls {
@@ -283,7 +300,7 @@ code {
 }
 
 .challenge-info.size-animating {
-  transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1);
+  transition: width var(--motion-3xl) var(--ease-emphasized);
 }
 
 select,
@@ -298,7 +315,7 @@ button {
 
 button {
   cursor: pointer;
-  transition: transform 0.15s ease, border-color 0.15s ease;
+  transition: transform var(--motion-xs) ease, border-color var(--motion-xs) ease;
 }
 
 button:hover {
@@ -317,9 +334,9 @@ button:active {
 
 #mode-btn.mode-size-animating {
   transition:
-    width 0.34s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.15s ease,
-    border-color 0.15s ease;
+    width var(--motion-3xl) var(--ease-emphasized),
+    transform var(--motion-xs) ease,
+    border-color var(--motion-xs) ease;
 }
 
 .arena {
@@ -342,7 +359,7 @@ button:active {
   row-gap: clamp(8px, 1vh, 12px);
   min-height: 0;
   overflow: hidden;
-  transition: grid-template-rows 0.3s ease, row-gap 0.3s ease;
+  transition: grid-template-rows var(--motion-2xl) ease, row-gap var(--motion-2xl) ease;
 }
 
 .side-column.key-hidden {
@@ -481,9 +498,6 @@ button:active {
 .pole-grid {
   display: grid;
   gap: 0;
-}
-
-.box-grid {
   padding: 0;
 }
 
@@ -518,12 +532,6 @@ button:active {
   text-align: center;
 }
 
-.pole-grid {
-  display: grid;
-  gap: 0;
-  padding: 0;
-}
-
 .cell.pole-marker {
   color: #8fc3eb;
   text-shadow: 0 0 8px rgba(143, 195, 235, 0.45);
@@ -534,7 +542,7 @@ button:active {
 }
 
 .score-card {
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  transition: opacity var(--motion-md) ease, transform var(--motion-md) ease;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
@@ -558,7 +566,7 @@ button:active {
   align-content: start;
   opacity: 1;
   transform: translateY(0);
-  transition: opacity 0.14s ease, transform 0.14s ease;
+  transition: opacity var(--motion-xxs) ease, transform var(--motion-xxs) ease;
 }
 
 .score-list.view-fade-out {
@@ -567,7 +575,14 @@ button:active {
 }
 
 .score-list.view-fade-in {
-  animation: score-view-fade-in 0.18s ease both;
+  animation: score-view-fade-in var(--motion-sm) ease both;
+}
+
+.score-list li,
+.key-skill-entry,
+.skill-row {
+  border-style: solid;
+  border-width: 1px;
 }
 
 .score-list li {
@@ -576,14 +591,14 @@ button:active {
   gap: 2px 8px;
   align-items: center;
   background: var(--surface-strong);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-color: var(--panel-item-border-subtle);
   border-radius: 9px;
   padding: 5px 8px;
 }
 
 .score-list li.score-row {
   cursor: pointer;
-  transition: border-color 0.16s ease, transform 0.16s ease;
+  transition: border-color var(--motion-s) ease, transform var(--motion-s) ease;
 }
 
 .score-list li.score-row:hover {
@@ -607,10 +622,10 @@ button:active {
   opacity: 0;
   transform: translateY(-4px);
   transition:
-    max-height 0.38s ease,
-    opacity 0.28s ease,
-    transform 0.3s ease,
-    margin-top 0.3s ease;
+    max-height var(--motion-4xl) ease,
+    opacity var(--motion-xl) ease,
+    transform var(--motion-2xl) ease,
+    margin-top var(--motion-2xl) ease;
   margin-top: 0;
   pointer-events: none;
 }
@@ -795,7 +810,7 @@ button:active {
   display: inline-block;
   width: 0;
   overflow: hidden;
-  animation: score-loading-dots 1.2s steps(4, end) infinite;
+  animation: score-loading-dots var(--motion-loading-dots) steps(4, end) infinite;
 }
 
 @keyframes score-view-fade-in {
@@ -818,6 +833,28 @@ button:active {
   }
 }
 
+@keyframes key-page-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes key-page-fade-out {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+}
+
 .key-card {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -830,11 +867,11 @@ button:active {
   opacity: 1;
   transform: translateY(0);
   transition:
-    opacity 0.24s ease,
-    transform 0.3s ease,
-    padding-top 0.3s ease,
-    padding-bottom 0.3s ease,
-    border-color 0.3s ease;
+    opacity var(--motion-lg) ease,
+    transform var(--motion-2xl) ease,
+    padding-top var(--motion-2xl) ease,
+    padding-bottom var(--motion-2xl) ease,
+    border-color var(--motion-2xl) ease;
 }
 
 .key-card.hidden {
@@ -865,12 +902,31 @@ button:active {
   padding: 2px 7px;
 }
 
+.key-pages {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  height: 100%;
+}
+
 .key-page {
+  grid-area: 1 / 1;
   min-height: 0;
 }
 
 .key-page.hidden {
   display: none;
+}
+
+.key-page.key-page-fade-in {
+  animation: key-page-fade-in var(--motion-md) ease both;
+  z-index: 1;
+}
+
+.key-page.key-page-fade-out {
+  animation: key-page-fade-out var(--motion-md) ease both;
+  pointer-events: none;
+  z-index: 0;
 }
 
 .key-list {
@@ -900,9 +956,9 @@ button:active {
 }
 
 .key-skill-entry {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-color: var(--panel-item-border-default);
   border-radius: 8px;
-  background: rgba(2, 11, 20, 0.7);
+  background: var(--panel-item-bg-contrast);
   padding: 6px 7px;
   display: grid;
   gap: 3px;
@@ -939,7 +995,7 @@ button:active {
   visibility: visible;
   pointer-events: auto;
   transition:
-    opacity 0.28s ease,
+    opacity var(--motion-xl) ease,
     visibility 0s linear 0s;
 }
 
@@ -948,8 +1004,8 @@ button:active {
   visibility: hidden;
   pointer-events: none;
   transition:
-    opacity 0.28s ease,
-    visibility 0s linear 0.28s;
+    opacity var(--motion-xl) ease,
+    visibility 0s linear var(--motion-xl);
 }
 
 .gameover-dialog {
@@ -964,8 +1020,8 @@ button:active {
   opacity: 1;
   transform: translateY(0) scale(1);
   transition:
-    opacity 0.28s ease,
-    transform 0.34s ease;
+    opacity var(--motion-xl) ease,
+    transform var(--motion-3xl) ease;
 }
 
 .gameover-modal.hidden .gameover-dialog {
@@ -1040,7 +1096,9 @@ button:active {
   gap: 8px;
 }
 
-.skills-form input {
+.text-input,
+.skills-form input,
+#gameover-name {
   width: 100%;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 9px;
@@ -1092,9 +1150,9 @@ button:active {
 }
 
 .skill-row {
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-color: var(--panel-item-border-default);
   border-radius: 10px;
-  background: rgba(7, 20, 32, 0.6);
+  background: var(--panel-item-bg-default);
   padding: 8px;
   display: grid;
   gap: 6px;
@@ -1155,15 +1213,6 @@ button:active {
   color: var(--text-soft);
 }
 
-#gameover-name {
-  width: 100%;
-  border: 1px solid rgba(255, 255, 255, 0.2);
-  border-radius: 9px;
-  background: rgba(2, 11, 20, 0.9);
-  color: var(--text-main);
-  padding: 9px 11px;
-}
-
 .gameover-submit {
   display: inline-flex;
   align-items: center;
@@ -1201,19 +1250,19 @@ button:active {
 }
 
 .fade-in {
-  animation: fade-slide 0.48s ease both;
+  animation: fade-slide var(--motion-5xl) ease both;
 }
 
 .fade-in-delayed {
-  animation: fade-slide 0.48s ease 0.08s both;
+  animation: fade-slide var(--motion-5xl) ease 0.08s both;
 }
 
 .fade-in-delayed-2 {
-  animation: fade-slide 0.48s ease 0.15s both;
+  animation: fade-slide var(--motion-5xl) ease 0.15s both;
 }
 
 .fade-in-delayed-3 {
-  animation: fade-slide 0.48s ease 0.22s both;
+  animation: fade-slide var(--motion-5xl) ease 0.22s both;
 }
 
 @keyframes fade-slide {
@@ -1284,30 +1333,15 @@ button:active {
     justify-content: flex-start;
   }
 
-  .select-wrap,
-  button,
-  select {
+  .controls .select-wrap,
+  .controls button,
+  .controls select {
     width: 100%;
   }
 
   .score-toolbar {
     width: 100%;
     justify-content: space-between;
-  }
-
-  .score-tabs,
-  .score-tab,
-  .score-submit-btn {
-    width: auto;
-  }
-
-  .hud-difficulty-wrap,
-  .hud-difficulty-wrap select {
-    width: auto;
-  }
-
-  .hud-difficulty-wrap select {
-    min-width: 120px;
   }
 
   .hud-key {

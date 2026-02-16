@@ -52,6 +52,7 @@ const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
 const DAILY_SCORE_TITLE = "DAILY CHALLENGE TOP 10";
 const DAILY_CHALLENGE_DIFFICULTY: Difficulty = 1;
+const KEY_PAGE_FADE_MS = 220;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
@@ -78,6 +79,7 @@ let autoHorizontalDirection: "left" | "right" = "right";
 let activeDailyChallengeKey: string | null = null;
 let modeButtonResizeTimer: number | null = null;
 let challengeInfoResizeTimer: number | null = null;
+let keyPageFadeTimer: number | null = null;
 let dailyChallengeStatus: DailyChallengeStatus | null = null;
 let startingDailyChallenge = false;
 const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
@@ -99,7 +101,7 @@ themeManager.apply(0);
 renderer.setStatus("Paused");
 renderer.renderScoreboard([]);
 renderSkillsList();
-syncKeyGuidePageUi();
+syncKeyGuidePageUi({ animate: false });
 syncSkillRunnerUi(skillRunner.getState());
 setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
 syncGameModeUi();
@@ -668,7 +670,7 @@ function isFormTarget(target: EventTarget | null): boolean {
 
 function toggleKeyCard(): void {
   if (!keyCardVisible) {
-    setKeyGuidePage("basic");
+    setKeyGuidePage("basic", { animate: false });
     keyCardVisible = true;
     dom.keyCardEl.classList.remove("hidden");
     dom.sideColumnEl.classList.remove("key-hidden");
@@ -680,28 +682,59 @@ function toggleKeyCard(): void {
     return;
   }
 
-  setKeyGuidePage("basic");
+  setKeyGuidePage("basic", { animate: false });
   keyCardVisible = false;
   dom.keyCardEl.classList.add("hidden");
   dom.sideColumnEl.classList.add("key-hidden");
 }
 
-function setKeyGuidePage(page: KeyGuidePage): void {
+function setKeyGuidePage(
+  page: KeyGuidePage,
+  options: { animate?: boolean } = {},
+): void {
   if (keyGuidePage === page) {
     return;
   }
   keyGuidePage = page;
-  syncKeyGuidePageUi();
+  syncKeyGuidePageUi(options);
 }
 
-function syncKeyGuidePageUi(): void {
+function syncKeyGuidePageUi(
+  options: { animate?: boolean } = {},
+): void {
   const basicPage = keyGuidePage === "basic";
+  const nextPageEl = basicPage ? dom.keyPageBasicEl : dom.keyPageSkillsEl;
+  const prevPageEl = basicPage ? dom.keyPageSkillsEl : dom.keyPageBasicEl;
+  const shouldAnimate = options.animate !== false && keyCardVisible;
   dom.keyPageBasicBtn.classList.toggle("active", basicPage);
   dom.keyPageSkillsBtn.classList.toggle("active", !basicPage);
   dom.keyPageBasicBtn.setAttribute("aria-pressed", basicPage ? "true" : "false");
   dom.keyPageSkillsBtn.setAttribute("aria-pressed", basicPage ? "false" : "true");
-  dom.keyPageBasicEl.classList.toggle("hidden", !basicPage);
-  dom.keyPageSkillsEl.classList.toggle("hidden", basicPage);
+
+  if (keyPageFadeTimer !== null) {
+    window.clearTimeout(keyPageFadeTimer);
+    keyPageFadeTimer = null;
+  }
+  dom.keyPageBasicEl.classList.remove("key-page-fade-in", "key-page-fade-out");
+  dom.keyPageSkillsEl.classList.remove("key-page-fade-in", "key-page-fade-out");
+
+  if (!shouldAnimate) {
+    nextPageEl.classList.remove("hidden");
+    prevPageEl.classList.add("hidden");
+    return;
+  }
+
+  prevPageEl.classList.remove("hidden");
+  nextPageEl.classList.remove("hidden");
+  prevPageEl.classList.add("key-page-fade-out");
+  nextPageEl.classList.add("key-page-fade-in");
+
+  keyPageFadeTimer = window.setTimeout(() => {
+    prevPageEl.classList.add("hidden");
+    prevPageEl.classList.remove("key-page-fade-out");
+    nextPageEl.classList.remove("key-page-fade-in");
+    keyPageFadeTimer = null;
+  }, KEY_PAGE_FADE_MS);
 }
 
 function renderKeyGuideSkillsPage(): void {

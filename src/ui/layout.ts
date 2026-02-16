@@ -171,20 +171,22 @@ const APP_TEMPLATE = `
               >2</button>
             </div>
           </div>
-          <div id="key-page-basic" class="key-list key-page">
-            <p><code>←/→/↑/↓</code> or <code>j/l/i/k</code>: Move</p>
-            <p><code>1</code>: New game</p>
-            <p><code>2</code>: Resume</p>
-            <p><code>3</code>: Pause</p>
-            <p><code>4</code>: Reset</p>
-            <p><code>5</code>: Theme</p>
-            <p><code>6</code>: Skills</p>
-            <p><code>7</code>: Toggle scoreboard</p>
-            <p><code>8</code>: Key page (<code>1 → 2 → hide</code>)</p>
-            <p><code>9</code>: Difficulty cycle (<code>1 → 2 → 3 → 1</code>)</p>
-          </div>
-          <div id="key-page-skills" class="key-list key-page hidden">
-            <div id="key-skills-list" class="key-skills-list"></div>
+          <div class="key-pages">
+            <div id="key-page-basic" class="key-list key-page">
+              <p><code>←/→/↑/↓</code> or <code>j/l/i/k</code>: Move</p>
+              <p><code>1</code>: New game</p>
+              <p><code>2</code>: Resume</p>
+              <p><code>3</code>: Pause</p>
+              <p><code>4</code>: Reset</p>
+              <p><code>5</code>: Theme</p>
+              <p><code>6</code>: Skills</p>
+              <p><code>7</code>: Toggle scoreboard</p>
+              <p><code>8</code>: Key page (<code>1 → 2 → hide</code>)</p>
+              <p><code>9</code>: Difficulty cycle (<code>1 → 2 → 3 → 1</code>)</p>
+            </div>
+            <div id="key-page-skills" class="key-list key-page hidden">
+              <div id="key-skills-list" class="key-skills-list"></div>
+            </div>
           </div>
         </section>
       </aside>
