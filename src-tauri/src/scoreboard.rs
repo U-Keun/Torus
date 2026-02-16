@@ -8,7 +8,7 @@ use uuid::Uuid;
 
 const CACHE_FILE_NAME: &str = "scoreboard-global-cache-v1.json";
 const DEVICE_UUID_FILE_NAME: &str = "device-uuid-v1.txt";
-const CACHE_MAX_ENTRIES: usize = 300;
+const CACHE_MAX_ENTRIES: usize = 100;
 const DEFAULT_TOP_LIMIT: usize = 10;
 const MAX_TOP_LIMIT: usize = 100;
 const HTTP_TIMEOUT_SECONDS: u64 = 8;

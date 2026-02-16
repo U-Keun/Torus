@@ -284,8 +284,8 @@ class TauriScoreboardStore implements ScoreboardStore {
 }
 
 export function createScoreboardStore(): ScoreboardStore {
-  const globalStore = new LocalEntryStore("torus-scores-v1", window.localStorage, 300);
-  const personalStore = new LocalEntryStore("torus-personal-scores-v1", window.localStorage, 500);
+  const globalStore = new LocalEntryStore("torus-scores-v1", window.localStorage, 100);
+  const personalStore = new LocalEntryStore("torus-personal-scores-v1", window.localStorage, 100);
   const supabaseUrl = readEnv("VITE_SUPABASE_URL");
   const supabaseAnonKey = readEnv("VITE_SUPABASE_ANON_KEY");
 
