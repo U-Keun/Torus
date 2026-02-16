@@ -38,6 +38,8 @@ pub struct ScoreEntry {
     pub date: String,
     #[serde(rename = "skillUsage", default)]
     pub skill_usage: Vec<SkillUsage>,
+    #[serde(rename = "isMe", default)]
+    pub is_me: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -48,6 +50,8 @@ struct ScoreRow {
     created_at: String,
     #[serde(default)]
     skill_usage: Option<Vec<SkillUsage>>,
+    #[serde(default)]
+    client_uuid: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -125,13 +129,17 @@ pub async fn fetch_global_scores(
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let mut cache = read_cache(&app)?;
-    if let Err(error) = get_or_create_device_uuid(&app) {
-        eprintln!("Failed to resolve device UUID. {error}");
-    }
+    let device_uuid = match get_or_create_device_uuid(&app) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            eprintln!("Failed to resolve device UUID. {error}");
+            None
+        }
+    };
     let config = normalize_supabase_config(supabase_url, supabase_anon_key);
 
     if let Some(config) = config {
-        match fetch_remote_scores(&config, top_limit).await {
+        match fetch_remote_scores(&config, top_limit, device_uuid.as_deref()).await {
             Ok(remote_entries) => {
                 cache.extend(remote_entries.clone());
                 sort_and_dedupe(&mut cache);
@@ -157,8 +165,9 @@ pub async fn submit_global_score(
     supabase_anon_key: Option<String>,
 ) -> Result<(), String> {
     let mut cache = read_cache(&app)?;
-    let entry = sanitize_entry(entry)?;
+    let mut entry = sanitize_entry(entry)?;
     let device_uuid = get_or_create_device_uuid(&app)?;
+    entry.is_me = true;
     cache.push(entry.clone());
     sort_and_dedupe(&mut cache);
     truncate_cache(&mut cache);
@@ -175,6 +184,7 @@ pub async fn submit_global_score(
 
 #[tauri::command]
 pub async fn fetch_daily_scores(
+    app: AppHandle,
     challenge_key: String,
     limit: Option<u32>,
     supabase_url: Option<String>,
@@ -184,7 +194,20 @@ pub async fn fetch_daily_scores(
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
-    fetch_remote_daily_scores(&config, &normalized_challenge_key, top_limit).await
+    let device_uuid = match get_or_create_device_uuid(&app) {
+        Ok(value) => Some(value),
+        Err(error) => {
+            eprintln!("Failed to resolve device UUID. {error}");
+            None
+        }
+    };
+    fetch_remote_daily_scores(
+        &config,
+        &normalized_challenge_key,
+        top_limit,
+        device_uuid.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -329,6 +352,7 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
         level: entry.level.max(0),
         date: entry.date.trim().to_string(),
         skill_usage,
+        is_me: false,
     })
 }
 
@@ -412,7 +436,11 @@ fn sort_and_dedupe(entries: &mut Vec<ScoreEntry>) {
             "{}::{}::{}::{}::{}",
             entry.user, entry.score, entry.level, entry.date, skill_usage_key
         );
-        deduped.entry(key).or_insert(entry);
+        if let Some(existing) = deduped.get_mut(&key) {
+            existing.is_me = existing.is_me || entry.is_me;
+            continue;
+        }
+        deduped.insert(key, entry);
     }
 
     let mut values = deduped.into_values().collect::<Vec<_>>();
@@ -441,13 +469,17 @@ fn create_http_client() -> Result<reqwest::Client, String> {
 async fn fetch_remote_scores(
     config: &SupabaseConfig,
     limit: usize,
+    device_uuid: Option<&str>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
     let client = create_http_client()?;
     let request = client
         .get(endpoint)
         .query(&[
-            ("select", "player_name,score,level,created_at,skill_usage"),
+            (
+                "select",
+                "player_name,score,level,created_at,skill_usage,client_uuid",
+            ),
             ("mode", "eq.classic"),
             ("challenge_key", "eq.classic"),
             ("order", "score.desc,level.desc,created_at.desc"),
@@ -480,6 +512,7 @@ async fn fetch_remote_scores(
             level: row.level,
             date: row.created_at,
             skill_usage: row.skill_usage.unwrap_or_default(),
+            is_me: is_owned_by_device(row.client_uuid.as_deref(), device_uuid),
         })
         .collect())
 }
@@ -540,6 +573,7 @@ async fn fetch_remote_score_by_uuid(
         level: row.level,
         date: row.created_at,
         skill_usage: row.skill_usage.unwrap_or_default(),
+        is_me: true,
     }))
 }
 
@@ -627,6 +661,7 @@ async fn fetch_remote_daily_scores(
     config: &SupabaseConfig,
     challenge_key: &str,
     limit: usize,
+    device_uuid: Option<&str>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
@@ -635,7 +670,10 @@ async fn fetch_remote_daily_scores(
     let response = client
         .get(endpoint)
         .query(&[
-            ("select", "player_name,score,level,created_at,skill_usage"),
+            (
+                "select",
+                "player_name,score,level,created_at,skill_usage,client_uuid",
+            ),
             ("mode", mode_filter.as_str()),
             ("challenge_key", challenge_filter.as_str()),
             ("order", "score.desc,level.desc,created_at.desc"),
@@ -666,8 +704,16 @@ async fn fetch_remote_daily_scores(
             level: row.level,
             date: row.created_at,
             skill_usage: row.skill_usage.unwrap_or_default(),
+            is_me: is_owned_by_device(row.client_uuid.as_deref(), device_uuid),
         })
         .collect())
+}
+
+fn is_owned_by_device(row_client_uuid: Option<&str>, device_uuid: Option<&str>) -> bool {
+    matches!(
+        (row_client_uuid, device_uuid),
+        (Some(row_uuid), Some(device_uuid)) if row_uuid == device_uuid
+    )
 }
 
 async fn fetch_remote_daily_attempts(

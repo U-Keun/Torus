@@ -11,6 +11,7 @@ interface ColorSpec {
 
 interface ScoreboardRenderOptions {
   allowSkillImport?: boolean;
+  showMeTag?: boolean;
 }
 
 export class TorusRenderer {
@@ -62,6 +63,7 @@ export class TorusRenderer {
     options: ScoreboardRenderOptions = {},
   ): void {
     const allowSkillImport = options.allowSkillImport !== false;
+    const showMeTag = options.showMeTag === true;
     if (entries.length === 0) {
       this.dom.scoreListEl.innerHTML = '<li class="empty-row">No records yet</li>';
       return;
@@ -72,6 +74,9 @@ export class TorusRenderer {
         const date = formatDate(row.date);
         const skillMark = row.skillUsage.length > 0 ? " · Skill" : "";
         const isExpanded = this.expandedScoreIndex === index;
+        const meTag = showMeTag && row.isMe
+          ? '<span class="score-me-tag" aria-label="My record">Me</span>'
+          : "";
         const drawerBody = row.skillUsage.length === 0
           ? '<li class="empty">No skill information recorded.</li>'
           : row.skillUsage
@@ -105,7 +110,7 @@ export class TorusRenderer {
             })
             .join("");
         return `<li class="score-row${isExpanded ? " expanded" : ""}" data-score-index="${index}" role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}">
-          <span class="name">${escapeHtml(row.user)}</span>
+          <span class="name-wrap"><span class="name" title="${escapeHtml(row.user)}">${escapeHtml(row.user)}</span>${meTag}</span>
           <span class="point">${row.score}</span>
           <span class="meta">Lv.${row.level} · ${date}${skillMark}</span>
           <div class="score-drawer">

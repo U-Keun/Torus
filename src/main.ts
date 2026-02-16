@@ -903,6 +903,7 @@ function renderDisplayedScoreboard(): void {
   renderer.setExpandedScoreIndex(expandedScoreIndex);
   renderer.renderScoreboard(displayedScoreboardEntries, {
     allowSkillImport: scoreboardView !== "personal",
+    showMeTag: scoreboardView === "global" || scoreboardView === "daily",
   });
   syncScoreRowAccessibility();
   applyExpandedScoreRowState();
@@ -1693,6 +1694,7 @@ function cloneScoreEntry(entry: ScoreEntry): ScoreEntry {
     level: entry.level,
     date: entry.date,
     skillUsage: cloneSkillUsageList(entry.skillUsage),
+    isMe: entry.isMe === true,
   };
 }
 
