@@ -9,6 +9,10 @@ interface ColorSpec {
   perCharColor?: Map<number, string>;
 }
 
+interface ScoreboardRenderOptions {
+  allowSkillImport?: boolean;
+}
+
 export class TorusRenderer {
   private status: GameStatus = "Paused";
   private scoreVisible = true;
@@ -53,7 +57,11 @@ export class TorusRenderer {
     this.dom.scoreCardEl.classList.toggle("hidden", !visible);
   }
 
-  public renderScoreboard(entries: ReadonlyArray<ScoreEntry>): void {
+  public renderScoreboard(
+    entries: ReadonlyArray<ScoreEntry>,
+    options: ScoreboardRenderOptions = {},
+  ): void {
+    const allowSkillImport = options.allowSkillImport !== false;
     if (entries.length === 0) {
       this.dom.scoreListEl.innerHTML = '<li class="empty-row">No records yet</li>';
       return;
@@ -69,22 +77,30 @@ export class TorusRenderer {
           : row.skillUsage
             .map((usage, skillIndex) => {
               const command = usage.command ? usage.command : "-";
-              const canImport = Boolean(usage.command && usage.command.trim().length > 0);
+              const canImport = (
+                allowSkillImport &&
+                Boolean(usage.command && usage.command.trim().length > 0)
+              );
               const importDisabledAttr = canImport ? "" : "disabled";
-              const importLabel = canImport ? "Import" : "No Command";
-              return `<li>
-                <div class="score-drawer-item-name">${escapeHtml(usage.name)}</div>
-                <div class="score-drawer-item-command">${escapeHtml(command)}</div>
-                <div class="score-drawer-item-actions">
-                  <button
-                    type="button"
-                    class="mini-btn score-drawer-import-btn"
-                    data-action="import-skill"
-                    data-score-index="${index}"
-                    data-skill-index="${skillIndex}"
-                    ${importDisabledAttr}
-                  >${importLabel}</button>
+              const importTitle = canImport ? "Import skill" : "No command to import";
+              const importButton = allowSkillImport
+                ? `<button
+                  type="button"
+                  class="mini-btn score-drawer-import-btn"
+                  data-action="import-skill"
+                  data-score-index="${index}"
+                  data-skill-index="${skillIndex}"
+                  title="${importTitle}"
+                  aria-label="${importTitle}"
+                  ${importDisabledAttr}
+                >${renderImportIconMarkup()}</button>`
+                : "";
+              return `<li class="score-drawer-skill-item">
+                <div class="score-drawer-item-main">
+                  <div class="score-drawer-item-name" title="${escapeHtml(usage.name)}">${escapeHtml(usage.name)}</div>
+                  <div class="score-drawer-item-command" title="${escapeHtml(command)}">${escapeHtml(command)}</div>
                 </div>
+                ${importButton}
               </li>`;
             })
             .join("");
@@ -362,4 +378,13 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function renderImportIconMarkup(): string {
+  // Lucide "import" icon
+  return `<svg class="score-drawer-import-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M12 3v12" />
+    <path d="m8 11 4 4 4-4" />
+    <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
+  </svg>`;
 }

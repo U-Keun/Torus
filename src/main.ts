@@ -901,7 +901,9 @@ function collapseExpandedScoreRow(): void {
 
 function renderDisplayedScoreboard(): void {
   renderer.setExpandedScoreIndex(expandedScoreIndex);
-  renderer.renderScoreboard(displayedScoreboardEntries);
+  renderer.renderScoreboard(displayedScoreboardEntries, {
+    allowSkillImport: scoreboardView !== "personal",
+  });
   syncScoreRowAccessibility();
   applyExpandedScoreRowState();
 }
