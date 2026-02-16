@@ -77,6 +77,7 @@ let modeButtonResizeTimer: number | null = null;
 let challengeInfoResizeTimer: number | null = null;
 let dailyChallengeStatus: DailyChallengeStatus | null = null;
 let startingDailyChallenge = false;
+const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
 
 const game = new TorusGame(
   (snapshot) => {
@@ -109,6 +110,7 @@ if (gameMode === "daily") {
   setDifficulty(parseDifficulty(dom.difficultyEl.value));
 }
 renderer.refreshLayout();
+scheduleInitialLayoutStabilization();
 
 bindUiControls();
 bindKeyboardControls();
@@ -187,6 +189,20 @@ function bindUiControls(): void {
   dom.submitPersonalBtn.addEventListener("click", () => {
     void openSubmitConfirmModal();
   });
+}
+
+function scheduleInitialLayoutStabilization(): void {
+  window.requestAnimationFrame(() => {
+    renderer.refreshLayout();
+  });
+  window.setTimeout(() => {
+    renderer.refreshLayout();
+  }, 220);
+  if (document.fonts?.ready) {
+    void document.fonts.ready.then(() => {
+      renderer.refreshLayout();
+    });
+  }
 }
 
 function bindKeyboardControls(): void {
@@ -1301,12 +1317,17 @@ async function refreshScoreboard(): Promise<void> {
   }
 
   refreshingScoreboard = true;
+  const targetView = scoreboardView;
+  if (targetView === "global" || targetView === "daily") {
+    renderer.renderScoreboardLoading(SHARED_SCOREBOARD_LOADING_MESSAGE);
+    dom.scoreListEl.classList.remove("view-fade-out");
+  }
 
   try {
     let rows: ScoreEntry[] = [];
-    if (scoreboardView === "personal") {
+    if (targetView === "personal") {
       rows = await scoreboardStore.topPersonal(10);
-    } else if (scoreboardView === "daily") {
+    } else if (targetView === "daily") {
       rows = await scoreboardStore.topDaily(getCurrentDailyChallenge().key, 10);
     } else {
       rows = await scoreboardStore.top(10);
@@ -1325,6 +1346,9 @@ async function refreshScoreboard(): Promise<void> {
 }
 
 async function refreshGlobalTop10Data(): Promise<void> {
+  if (scoreboardView === "global") {
+    renderer.renderScoreboardLoading(SHARED_SCOREBOARD_LOADING_MESSAGE);
+  }
   const globalRows = await scoreboardStore.top(10);
   displayedScoreboardEntries = globalRows.map((row) => cloneScoreEntry(row));
   if (

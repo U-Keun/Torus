@@ -88,6 +88,11 @@ export class TorusRenderer {
       .join("");
   }
 
+  public renderScoreboardLoading(message: string): void {
+    this.dom.scoreListEl.innerHTML =
+      `<li class="empty-row loading-row" aria-live="polite">${escapeHtml(message)}<span class="loading-ellipsis" aria-hidden="true"></span></li>`;
+  }
+
   public setExpandedScoreIndex(index: number | null): void {
     this.expandedScoreIndex = index;
   }
@@ -244,11 +249,23 @@ export class TorusRenderer {
     const board = this.dom.boardStageCardEl;
     const side = this.dom.sideColumnEl;
 
-    board.style.height = "auto";
-    const target = Math.ceil(board.getBoundingClientRect().height);
+    board.style.height = "";
+    side.style.height = "";
+    if (window.matchMedia("(max-width: 1100px)").matches) {
+      return;
+    }
 
-    board.style.height = `${target}px`;
-    side.style.height = `${target}px`;
+    const target = Math.ceil(board.getBoundingClientRect().height);
+    if (!Number.isFinite(target) || target <= 0) {
+      return;
+    }
+
+    const arenaHeight = Math.floor(board.parentElement?.getBoundingClientRect().height ?? target);
+    const clamped = Number.isFinite(arenaHeight) && arenaHeight > 0
+      ? Math.min(target, arenaHeight)
+      : target;
+
+    side.style.height = `${clamped}px`;
   }
 }
 
