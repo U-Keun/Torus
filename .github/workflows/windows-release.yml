@@ -26,6 +26,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Resolve Release Tag
         id: release_tag
@@ -41,8 +43,14 @@ jobs:
 
           if [[ -n "$TAG" ]]; then
             git fetch --force --tags
+            git fetch --force origin +refs/heads/main:refs/remotes/origin/main
             if ! git rev-parse "$TAG" >/dev/null 2>&1; then
               echo "Tag '$TAG' does not exist. Create and push the tag first."
+              exit 1
+            fi
+            TAG_SHA="$(git rev-list -n 1 "$TAG")"
+            if ! git merge-base --is-ancestor "$TAG_SHA" "refs/remotes/origin/main"; then
+              echo "Tag '$TAG' points to '$TAG_SHA', which is not on origin/main."
               exit 1
             fi
           fi

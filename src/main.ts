@@ -3,7 +3,13 @@ import { isTauri } from "@tauri-apps/api/core";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { type Difficulty, type GameOverPayload, type GameSnapshot, TorusGame } from "./game";
-import { createScoreboardStore, type ScoreEntry, type SkillUsageEntry } from "./scoreboard";
+import {
+  createScoreboardStore,
+  type DailyChallengeSubmitResult,
+  type DailyChallengeStatus,
+  type ScoreEntry,
+  type SkillUsageEntry,
+} from "./scoreboard";
 import { SkillRunner, type SkillRunnerState } from "./skills/runner";
 import { SkillStore } from "./skills/store";
 import {
@@ -20,7 +26,9 @@ import { mountTorusLayout } from "./ui/layout";
 import { type GameStatus, TorusRenderer } from "./ui/renderer";
 import { ThemeManager } from "./ui/theme";
 
-type ScoreboardView = "global" | "personal";
+type ScoreboardView = "global" | "personal" | "daily";
+type NonDailyScoreboardView = "global" | "personal";
+type GameMode = "classic" | "daily";
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) {
@@ -36,10 +44,13 @@ const LAST_USER_STORAGE_KEY = "torus-last-user-v1";
 const DEVICE_BEST_STORAGE_KEY = "torus-device-best-v1";
 const SUBMIT_DB_PREF_STORAGE_KEY = "torus-submit-db-pref-v1";
 const LAST_UPDATE_CHECK_STORAGE_KEY = "torus-last-update-check-v1";
+const GAME_MODE_STORAGE_KEY = "torus-game-mode-v1";
 const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 6;
 const PERSONAL_SUBMIT_BUTTON_LABEL = "Submit";
 const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
+const DAILY_SCORE_TITLE = "DAILY CHALLENGE TOP 10";
+const DAILY_CHALLENGE_DIFFICULTY: Difficulty = 1;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
@@ -50,7 +61,9 @@ let refreshingScoreboard = false;
 let submittingPersonalBest = false;
 let preparingPersonalSubmit = false;
 let switchingScoreboardView = false;
-let scoreboardView: ScoreboardView = "global";
+let gameMode: GameMode = loadGameModePreference();
+let scoreboardView: ScoreboardView = gameMode === "daily" ? "daily" : "global";
+let nonDailyScoreboardView: NonDailyScoreboardView = "global";
 let skills: Skill[] = skillStore.list();
 let editingSkillId: string | null = null;
 let activeGameStatus: GameStatus = "Paused";
@@ -60,6 +73,12 @@ let pendingGameOverSkillUsage: SkillUsageEntry[] = [];
 let expandedScoreIndex: number | null = null;
 let latestSnapshot: GameSnapshot | null = null;
 let autoHorizontalDirection: "left" | "right" = "right";
+let activeDailyChallengeKey: string | null = null;
+let modeButtonResizeTimer: number | null = null;
+let challengeInfoResizeTimer: number | null = null;
+let dailyChallengeStatus: DailyChallengeStatus | null = null;
+let startingDailyChallenge = false;
+const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
 
 const game = new TorusGame(
   (snapshot) => {
@@ -80,10 +99,19 @@ renderer.renderScoreboard([]);
 renderSkillsList();
 syncSkillRunnerUi(skillRunner.getState());
 setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
+syncGameModeUi();
+if (gameMode === "daily") {
+  void refreshDailyChallengeStatus();
+}
 syncScoreboardViewUi();
 void refreshScoreboard();
-setDifficulty(parseDifficulty(dom.difficultyEl.value));
+if (gameMode === "daily") {
+  setDifficulty(DAILY_CHALLENGE_DIFFICULTY);
+} else {
+  setDifficulty(parseDifficulty(dom.difficultyEl.value));
+}
 renderer.refreshLayout();
+scheduleInitialLayoutStabilization();
 
 bindUiControls();
 bindKeyboardControls();
@@ -104,7 +132,15 @@ window.addEventListener("beforeunload", () => {
 
 function bindUiControls(): void {
   dom.difficultyEl.addEventListener("change", () => {
+    if (gameMode === "daily") {
+      dom.difficultyEl.value = String(DAILY_CHALLENGE_DIFFICULTY);
+      return;
+    }
     setDifficulty(parseDifficulty(dom.difficultyEl.value));
+  });
+
+  dom.modeBtn.addEventListener("click", () => {
+    void toggleGameMode();
   });
 
   dom.newBtn.addEventListener("click", () => {
@@ -139,13 +175,35 @@ function bindUiControls(): void {
     toggleKeyCard();
   });
 
+  dom.globalScoreBtn.addEventListener("click", () => {
+    void setScoreboardView("global");
+  });
+
+  dom.dailyScoreBtn.addEventListener("click", () => {
+    void setScoreboardView("daily");
+  });
+
   dom.personalScoreBtn.addEventListener("click", () => {
-    void toggleScoreboardView();
+    void setScoreboardView("personal");
   });
 
   dom.submitPersonalBtn.addEventListener("click", () => {
     void openSubmitConfirmModal();
   });
+}
+
+function scheduleInitialLayoutStabilization(): void {
+  window.requestAnimationFrame(() => {
+    renderer.refreshLayout();
+  });
+  window.setTimeout(() => {
+    renderer.refreshLayout();
+  }, 220);
+  if (document.fonts?.ready) {
+    void document.fonts.ready.then(() => {
+      renderer.refreshLayout();
+    });
+  }
 }
 
 function bindKeyboardControls(): void {
@@ -257,6 +315,11 @@ function startNewGame(): void {
   autoHorizontalDirection = "right";
   currentRunSkillUsage = [];
   pendingGameOverSkillUsage = [];
+  if (gameMode === "daily") {
+    void startDailyChallengeGame();
+    return;
+  }
+  activeDailyChallengeKey = null;
   game.startNewGame(parseDifficulty(dom.difficultyEl.value));
   canResume = true;
   setStatus("Running");
@@ -285,6 +348,7 @@ function resetGame(): void {
   autoHorizontalDirection = "right";
   currentRunSkillUsage = [];
   pendingGameOverSkillUsage = [];
+  activeDailyChallengeKey = null;
   game.reset();
   canResume = false;
   setStatus("Paused");
@@ -296,6 +360,9 @@ function setDifficulty(difficulty: Difficulty): void {
 }
 
 function cycleDifficulty(): void {
+  if (gameMode === "daily") {
+    return;
+  }
   const current = parseDifficulty(dom.difficultyEl.value);
   if (current === 1) {
     setDifficulty(2);
@@ -311,6 +378,180 @@ function cycleDifficulty(): void {
 function setStatus(status: GameStatus): void {
   activeGameStatus = status;
   renderer.setStatus(status);
+}
+
+async function startDailyChallengeGame(): Promise<void> {
+  if (startingDailyChallenge) {
+    return;
+  }
+  startingDailyChallenge = true;
+  const challenge = getCurrentDailyChallenge();
+  try {
+    const status = await refreshDailyChallengeStatus(challenge.key);
+    if (!status) {
+      window.alert("Failed to verify Daily Challenge attempts. Check network/Supabase and try again.");
+      return;
+    }
+    if (!status.canSubmit) {
+      const used = status.attemptsUsed;
+      const max = status.maxAttempts;
+      window.alert(`Daily Challenge limit reached (${used}/${max}). Try again tomorrow (UTC).`);
+      return;
+    }
+
+    activeDailyChallengeKey = challenge.key;
+    setDifficulty(challenge.difficulty);
+    game.startNewGame(challenge.difficulty, { randomSeed: challenge.seed });
+    canResume = true;
+    setStatus("Running");
+  } finally {
+    startingDailyChallenge = false;
+  }
+}
+
+async function refreshDailyChallengeStatus(
+  challengeKey: string = getCurrentDailyChallenge().key,
+): Promise<DailyChallengeStatus | null> {
+  try {
+    const status = await scoreboardStore.getDailyStatus(challengeKey);
+    setDailyChallengeStatus(status);
+    return status;
+  } catch (error) {
+    console.warn("Failed to load daily challenge status.", error);
+    setDailyChallengeStatus(null);
+    return null;
+  }
+}
+
+async function toggleGameMode(): Promise<void> {
+  gameMode = gameMode === "daily" ? "classic" : "daily";
+  saveGameModePreference(gameMode);
+  if (gameMode === "daily") {
+    scoreboardView = "daily";
+    setDifficulty(DAILY_CHALLENGE_DIFFICULTY);
+  } else if (scoreboardView === "daily") {
+    scoreboardView = nonDailyScoreboardView;
+  }
+  syncGameModeUi({ animateModeButton: true, animateChallengeInfo: true });
+  if (gameMode === "daily") {
+    void refreshDailyChallengeStatus();
+  } else {
+    dailyChallengeStatus = null;
+  }
+  syncScoreboardViewUi();
+  await refreshScoreboard();
+}
+
+function syncGameModeUi(
+  options: { animateModeButton?: boolean; animateChallengeInfo?: boolean } = {},
+): void {
+  const challenge = getCurrentDailyChallenge();
+  const dailyMode = gameMode === "daily";
+  setModeButtonLabel(
+    dailyMode ? "Mode: Daily" : "Mode: Classic",
+    options.animateModeButton === true,
+  );
+  dom.modeBtn.title = dailyMode
+    ? "Daily Challenge uses a fixed seed and fixed difficulty."
+    : "Classic mode uses normal random generation.";
+  setChallengeInfoLabel(
+    dailyMode ? formatDailyChallengeInfo(challenge) : "Classic mode",
+    options.animateChallengeInfo === true,
+  );
+  dom.difficultyEl.disabled = dailyMode;
+  if (dailyMode) {
+    dom.difficultyEl.value = String(challenge.difficulty);
+  }
+}
+
+function formatDailyChallengeInfo(challenge: DailyChallengeSpec): string {
+  if (!dailyChallengeStatus || dailyChallengeStatus.challengeKey !== challenge.key) {
+    return `Daily Challenge (UTC): ${challenge.key} · Difficulty ${challenge.difficulty}`;
+  }
+  return (
+    `Daily Challenge (UTC): ${challenge.key} · ${dailyChallengeStatus.attemptsLeft}/` +
+    `${dailyChallengeStatus.maxAttempts} attempts left`
+  );
+}
+
+function setModeButtonLabel(label: string, animate: boolean): void {
+  const button = dom.modeBtn;
+  if (!animate) {
+    if (modeButtonResizeTimer !== null) {
+      window.clearTimeout(modeButtonResizeTimer);
+      modeButtonResizeTimer = null;
+    }
+    button.classList.remove("mode-size-animating");
+    button.style.width = "";
+    button.textContent = label;
+    return;
+  }
+
+  const currentLabel = button.textContent ?? "";
+  if (currentLabel === label) {
+    return;
+  }
+
+  if (modeButtonResizeTimer !== null) {
+    window.clearTimeout(modeButtonResizeTimer);
+    modeButtonResizeTimer = null;
+  }
+
+  const startWidth = button.getBoundingClientRect().width;
+  button.style.width = `${startWidth}px`;
+  button.textContent = label;
+  button.style.width = "auto";
+  const targetWidth = button.getBoundingClientRect().width;
+  button.style.width = `${startWidth}px`;
+  button.classList.add("mode-size-animating");
+  void button.offsetWidth;
+  button.style.width = `${targetWidth}px`;
+
+  modeButtonResizeTimer = window.setTimeout(() => {
+    button.classList.remove("mode-size-animating");
+    button.style.width = "";
+    modeButtonResizeTimer = null;
+  }, 360);
+}
+
+function setChallengeInfoLabel(label: string, animate: boolean): void {
+  const badge = dom.challengeInfoEl;
+  if (!animate) {
+    if (challengeInfoResizeTimer !== null) {
+      window.clearTimeout(challengeInfoResizeTimer);
+      challengeInfoResizeTimer = null;
+    }
+    badge.classList.remove("size-animating");
+    badge.style.width = "";
+    badge.textContent = label;
+    return;
+  }
+
+  const currentLabel = badge.textContent ?? "";
+  if (currentLabel === label) {
+    return;
+  }
+
+  if (challengeInfoResizeTimer !== null) {
+    window.clearTimeout(challengeInfoResizeTimer);
+    challengeInfoResizeTimer = null;
+  }
+
+  const startWidth = badge.getBoundingClientRect().width;
+  badge.style.width = `${startWidth}px`;
+  badge.textContent = label;
+  badge.style.width = "auto";
+  const targetWidth = badge.getBoundingClientRect().width;
+  badge.style.width = `${startWidth}px`;
+  badge.classList.add("size-animating");
+  void badge.offsetWidth;
+  badge.style.width = `${targetWidth}px`;
+
+  challengeInfoResizeTimer = window.setTimeout(() => {
+    badge.classList.remove("size-animating");
+    badge.style.width = "";
+    challengeInfoResizeTimer = null;
+  }, 360);
 }
 
 function dispatchMove(direction: Direction): void {
@@ -437,6 +678,10 @@ function bindGameOverModal(): void {
     }
 
     if (event.key === "Escape") {
+      if (gameMode === "daily") {
+        event.preventDefault();
+        return;
+      }
       closeGameOverModal();
       event.preventDefault();
     }
@@ -444,6 +689,9 @@ function bindGameOverModal(): void {
 
   dom.gameOverModalEl.addEventListener("click", (event) => {
     if (event.target === dom.gameOverModalEl) {
+      if (gameMode === "daily") {
+        return;
+      }
       closeGameOverModal();
     }
   });
@@ -639,6 +887,16 @@ function renderDisplayedScoreboard(): void {
   renderer.renderScoreboard(displayedScoreboardEntries);
   syncScoreRowAccessibility();
   applyExpandedScoreRowState();
+}
+
+function setDisplayedScoreboardRows(rows: ReadonlyArray<ScoreEntry>): void {
+  displayedScoreboardEntries = rows.map((row) => cloneScoreEntry(row));
+  if (
+    expandedScoreIndex !== null &&
+    expandedScoreIndex >= displayedScoreboardEntries.length
+  ) {
+    expandedScoreIndex = null;
+  }
 }
 
 function applyExpandedScoreRowState(): void {
@@ -937,7 +1195,8 @@ function openGameOverModal(payload: GameOverPayload): void {
   const lastUser = game.getLastUser().trim();
   savingGameOver = false;
   dom.gameOverSaveBtn.disabled = false;
-  dom.gameOverSkipBtn.disabled = false;
+  dom.gameOverSkipBtn.hidden = gameMode === "daily";
+  dom.gameOverSkipBtn.disabled = gameMode === "daily";
   dom.gameOverScoreEl.textContent = String(payload.score);
   dom.gameOverLevelEl.textContent = String(payload.level);
   dom.gameOverNameEl.value = "";
@@ -954,7 +1213,9 @@ function closeGameOverModal(): void {
   savingGameOver = false;
   pendingGameOverPayload = null;
   pendingGameOverSkillUsage = [];
+  activeDailyChallengeKey = null;
   dom.gameOverSaveBtn.disabled = false;
+  dom.gameOverSkipBtn.hidden = false;
   dom.gameOverSkipBtn.disabled = false;
   dom.gameOverModalEl.classList.add("hidden");
 }
@@ -973,6 +1234,15 @@ async function saveGameOverScore(): Promise<void> {
 
   const name = dom.gameOverNameEl.value.trim() || game.getLastUser().trim();
   if (name.length === 0) {
+    if (gameMode === "daily") {
+      dom.gameOverBestHintEl.className = "gameover-hint warn";
+      dom.gameOverBestHintEl.textContent = "Name is required to submit a Daily Challenge record.";
+      savingGameOver = false;
+      dom.gameOverSaveBtn.disabled = false;
+      dom.gameOverSkipBtn.disabled = true;
+      dom.gameOverNameEl.focus();
+      return;
+    }
     closeGameOverModal();
     return;
   }
@@ -997,12 +1267,30 @@ async function saveGameOverScore(): Promise<void> {
 
   try {
     let shouldRefreshGlobal = false;
-    if (dom.gameOverSubmitDbEl.checked && isDeviceBest) {
-      await scoreboardStore.add(entry);
-      await refreshGlobalTop10Data();
+    let shouldSubmitGlobalFromDaily = false;
+    if (gameMode === "daily") {
+      const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
+      const dailyResult = await scoreboardStore.addDaily(challengeKey, entry);
+      setDailyChallengeStatus(toDailyChallengeStatus(dailyResult));
+      if (!dailyResult.accepted) {
+        throw new Error(
+          `Daily Challenge limit reached (${dailyResult.attemptsUsed}/${dailyResult.maxAttempts}).`,
+        );
+      }
+      shouldSubmitGlobalFromDaily = dailyResult.improved;
+    }
+    if (shouldSubmitGlobalFromDaily) {
+      await submitEntryToGlobalAndRefresh(entry);
+      shouldRefreshGlobal = true;
+    } else if (dom.gameOverSubmitDbEl.checked && isDeviceBest) {
+      await submitEntryToGlobalAndRefresh(entry);
       shouldRefreshGlobal = true;
     }
-    if (scoreboardView === "personal" || shouldRefreshGlobal) {
+    if (
+      scoreboardView === "personal" ||
+      scoreboardView === "daily" ||
+      shouldRefreshGlobal
+    ) {
       await refreshScoreboard();
     }
     closeGameOverModal();
@@ -1010,11 +1298,15 @@ async function saveGameOverScore(): Promise<void> {
     canResume = false;
     currentRunSkillUsage = [];
     setStatus("Paused");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to submit score.";
+    dom.gameOverBestHintEl.className = "gameover-hint warn";
+    dom.gameOverBestHintEl.textContent = message;
   } finally {
     if (!dom.gameOverModalEl.classList.contains("hidden")) {
       savingGameOver = false;
       dom.gameOverSaveBtn.disabled = false;
-      dom.gameOverSkipBtn.disabled = false;
+      dom.gameOverSkipBtn.disabled = gameMode === "daily";
     }
   }
 }
@@ -1025,18 +1317,15 @@ async function refreshScoreboard(): Promise<void> {
   }
 
   refreshingScoreboard = true;
+  const targetView = scoreboardView;
+  if (targetView === "global" || targetView === "daily") {
+    renderer.renderScoreboardLoading(SHARED_SCOREBOARD_LOADING_MESSAGE);
+    dom.scoreListEl.classList.remove("view-fade-out");
+  }
 
   try {
-    const rows = scoreboardView === "personal"
-      ? await scoreboardStore.topPersonal(10)
-      : await scoreboardStore.top(10);
-    displayedScoreboardEntries = rows.map((row) => cloneScoreEntry(row));
-    if (
-      expandedScoreIndex !== null &&
-      expandedScoreIndex >= displayedScoreboardEntries.length
-    ) {
-      expandedScoreIndex = null;
-    }
+    const rows = await fetchScoreboardRows(targetView);
+    setDisplayedScoreboardRows(rows);
     renderDisplayedScoreboard();
   } finally {
     refreshingScoreboard = false;
@@ -1044,20 +1333,50 @@ async function refreshScoreboard(): Promise<void> {
 }
 
 async function refreshGlobalTop10Data(): Promise<void> {
-  const globalRows = await scoreboardStore.top(10);
-  displayedScoreboardEntries = globalRows.map((row) => cloneScoreEntry(row));
-  if (
-    expandedScoreIndex !== null &&
-    expandedScoreIndex >= displayedScoreboardEntries.length
-  ) {
-    expandedScoreIndex = null;
+  if (scoreboardView === "global") {
+    renderer.renderScoreboardLoading(SHARED_SCOREBOARD_LOADING_MESSAGE);
   }
+  const globalRows = await scoreboardStore.top(10);
+  setDisplayedScoreboardRows(globalRows);
   if (scoreboardView === "global") {
     renderDisplayedScoreboard();
   }
 }
 
+function setDailyChallengeStatus(status: DailyChallengeStatus | null): void {
+  dailyChallengeStatus = status;
+  syncGameModeUi();
+}
+
+function toDailyChallengeStatus(result: DailyChallengeSubmitResult): DailyChallengeStatus {
+  return {
+    challengeKey: result.challengeKey,
+    attemptsUsed: result.attemptsUsed,
+    attemptsLeft: result.attemptsLeft,
+    maxAttempts: result.maxAttempts,
+    canSubmit: result.canSubmit,
+  };
+}
+
+async function submitEntryToGlobalAndRefresh(entry: ScoreEntry): Promise<void> {
+  await scoreboardStore.add(entry);
+  await refreshGlobalTop10Data();
+}
+
+async function fetchScoreboardRows(view: ScoreboardView): Promise<ScoreEntry[]> {
+  if (view === "personal") {
+    return scoreboardStore.topPersonal(10);
+  }
+  if (view === "daily") {
+    return scoreboardStore.topDaily(getCurrentDailyChallenge().key, 10);
+  }
+  return scoreboardStore.top(10);
+}
+
 async function openSubmitConfirmModal(): Promise<void> {
+  if (scoreboardView === "daily") {
+    return;
+  }
   if (isSubmitConfirmModalOpen() || preparingPersonalSubmit || submittingPersonalBest) {
     return;
   }
@@ -1114,10 +1433,9 @@ async function confirmSubmitPersonalBest(): Promise<void> {
   dom.submitPersonalBtn.textContent = "Submitting";
 
   try {
-    await scoreboardStore.add(pendingSubmitEntry);
+    await submitEntryToGlobalAndRefresh(pendingSubmitEntry);
     dom.submitPersonalBtn.textContent = "Submitted";
     closeSubmitConfirmModal(true);
-    await refreshGlobalTop10Data();
   } catch (error) {
     console.warn("Failed to submit personal best score.", error);
     dom.submitPersonalBtn.textContent = "Retry";
@@ -1129,8 +1447,7 @@ async function confirmSubmitPersonalBest(): Promise<void> {
     submittingPersonalBest = false;
     window.setTimeout(() => {
       if (!submittingPersonalBest) {
-        dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
-        dom.submitPersonalBtn.disabled = false;
+        syncScoreboardViewUi();
       }
     }, 1200);
   }
@@ -1152,7 +1469,19 @@ function isSubmitConfirmModalOpen(): boolean {
   return !dom.submitConfirmModalEl.classList.contains("hidden");
 }
 
-async function toggleScoreboardView(): Promise<void> {
+async function setScoreboardView(nextView: ScoreboardView): Promise<void> {
+  if (scoreboardView === nextView) {
+    return;
+  }
+  await switchScoreboardView(() => {
+    scoreboardView = nextView;
+    if (nextView === "global" || nextView === "personal") {
+      nonDailyScoreboardView = nextView;
+    }
+  });
+}
+
+async function switchScoreboardView(applyViewChange: () => void): Promise<void> {
   if (switchingScoreboardView) {
     return;
   }
@@ -1162,7 +1491,7 @@ async function toggleScoreboardView(): Promise<void> {
     dom.scoreListEl.classList.add("view-fade-out");
     await delay(120);
 
-    scoreboardView = scoreboardView === "global" ? "personal" : "global";
+    applyViewChange();
     expandedScoreIndex = null;
     syncScoreboardViewUi();
     await refreshScoreboard();
@@ -1181,15 +1510,31 @@ async function toggleScoreboardView(): Promise<void> {
 }
 
 function syncScoreboardViewUi(): void {
+  const globalMode = scoreboardView === "global";
   const personalMode = scoreboardView === "personal";
-  dom.scoreTitleEl.textContent = personalMode ? PERSONAL_SCORE_TITLE : GLOBAL_SCORE_TITLE;
-  dom.scoreListEl.classList.toggle("global-mode", !personalMode);
+  const dailyMode = scoreboardView === "daily";
+  const challenge = getCurrentDailyChallenge();
+  if (dailyMode) {
+    dom.scoreTitleEl.textContent = `${DAILY_SCORE_TITLE} · ${challenge.key}`;
+  } else if (personalMode) {
+    dom.scoreTitleEl.textContent = PERSONAL_SCORE_TITLE;
+  } else {
+    dom.scoreTitleEl.textContent = GLOBAL_SCORE_TITLE;
+  }
+  dom.scoreListEl.classList.toggle("global-mode", globalMode);
+  dom.globalScoreBtn.classList.toggle("active", globalMode);
   dom.personalScoreBtn.classList.toggle("active", personalMode);
+  dom.dailyScoreBtn.classList.toggle("active", dailyMode);
+  dom.globalScoreBtn.setAttribute("aria-pressed", globalMode ? "true" : "false");
   dom.personalScoreBtn.setAttribute("aria-pressed", personalMode ? "true" : "false");
-  dom.personalScoreBtn.textContent = personalMode ? "Global" : "Personal";
+  dom.dailyScoreBtn.setAttribute("aria-pressed", dailyMode ? "true" : "false");
+
+  dom.submitPersonalBtn.title = dailyMode
+    ? "Daily Challenge records are stored locally for now."
+    : "";
   if (!submittingPersonalBest) {
     dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
-    dom.submitPersonalBtn.disabled = false;
+    dom.submitPersonalBtn.disabled = dailyMode;
   }
 }
 
@@ -1263,6 +1608,48 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
   }
   const value = raw.trim().slice(0, 120);
   return value.length > 0 ? value : null;
+}
+
+interface DailyChallengeSpec {
+  key: string;
+  seed: number;
+  difficulty: Difficulty;
+}
+
+function getCurrentDailyChallenge(now: Date = new Date()): DailyChallengeSpec {
+  const key = now.toISOString().slice(0, 10);
+  return {
+    key,
+    seed: hashStringToSeed(`torus-daily-${key}`),
+    difficulty: DAILY_CHALLENGE_DIFFICULTY,
+  };
+}
+
+function hashStringToSeed(value: string): number {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return hash >>> 0;
+}
+
+function loadGameModePreference(): GameMode {
+  try {
+    return window.localStorage.getItem(GAME_MODE_STORAGE_KEY) === "daily"
+      ? "daily"
+      : "classic";
+  } catch {
+    return "classic";
+  }
+}
+
+function saveGameModePreference(mode: GameMode): void {
+  try {
+    window.localStorage.setItem(GAME_MODE_STORAGE_KEY, mode);
+  } catch {
+    // Ignore storage errors and continue with current mode.
+  }
 }
 
 function loadLastUser(): string {
@@ -1360,6 +1747,20 @@ function isBetterThanBest(entry: ScoreEntry, best: ScoreEntry | null): boolean {
 }
 
 function updateGameOverSubmissionHint(payload: GameOverPayload): void {
+  if (gameMode === "daily") {
+    dom.gameOverSubmitDbEl.checked = false;
+    dom.gameOverSubmitDbEl.disabled = true;
+    dom.gameOverBestHintEl.className = "gameover-hint good";
+    const challenge = getCurrentDailyChallenge();
+    const status = dailyChallengeStatus && dailyChallengeStatus.challengeKey === challenge.key
+      ? dailyChallengeStatus
+      : null;
+    dom.gameOverBestHintEl.textContent = status
+      ? `Daily Challenge submits automatically. Attempts left after this run: ${Math.max(0, status.attemptsLeft - 1)}. If this run becomes your Daily best, it also syncs to Global.`
+      : "Daily Challenge submits automatically. Daily best is also synced to Global.";
+    return;
+  }
+
   const best = loadDeviceBestEntry();
   const candidate: ScoreEntry = {
     user: "",

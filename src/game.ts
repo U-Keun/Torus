@@ -37,6 +37,10 @@ export interface GameOverPayload {
   level: number;
 }
 
+interface NewGameOptions {
+  randomSeed?: number;
+}
+
 export class TorusGame {
   private readonly gaugeTime = 20;
   private readonly flyingTorusSpeedFactor = 1;
@@ -67,6 +71,7 @@ export class TorusGame {
   private difficulty: Difficulty = 1;
   private gameSpeedMs = 100;
   private lastUser = "";
+  private randomFn: () => number = Math.random;
 
   constructor(
     private readonly onRender: (snapshot: GameSnapshot) => void,
@@ -90,8 +95,11 @@ export class TorusGame {
     return this.difficulty;
   }
 
-  public startNewGame(difficulty: Difficulty): void {
+  public startNewGame(difficulty: Difficulty, options: NewGameOptions = {}): void {
     this.setDifficulty(difficulty);
+    this.randomFn = typeof options.randomSeed === "number"
+      ? createSeededRandom(options.randomSeed)
+      : Math.random;
     this.resetState();
     this.gameOn = true;
     this.startTimer();
@@ -335,7 +343,7 @@ export class TorusGame {
   }
 
   private randomTorus(): number {
-    return Math.floor(Math.random() * this.numColors);
+    return Math.floor(this.randomFn() * this.numColors);
   }
 
   private boxSetRaw(row: number, col: number, value: TorusCell | null): void {
@@ -697,4 +705,14 @@ export class TorusGame {
     this.pole = newPole;
     this.poleHeight = newHeight;
   }
+}
+
+function createSeededRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let value = Math.imul(state ^ (state >>> 15), 1 | state);
+    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  };
 }

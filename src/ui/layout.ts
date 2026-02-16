@@ -5,6 +5,8 @@ export interface TorusDom {
   statusEl: HTMLSpanElement;
   gaugeFillEl: HTMLDivElement;
   difficultyEl: HTMLSelectElement;
+  modeBtn: HTMLButtonElement;
+  challengeInfoEl: HTMLSpanElement;
   boxStageEl: HTMLDivElement;
   boxGridEl: HTMLDivElement;
   flyingLayerEl: HTMLDivElement;
@@ -15,7 +17,9 @@ export interface TorusDom {
   keyCardEl: HTMLDivElement;
   scoreTitleEl: HTMLDivElement;
   scoreListEl: HTMLOListElement;
+  globalScoreBtn: HTMLButtonElement;
   personalScoreBtn: HTMLButtonElement;
+  dailyScoreBtn: HTMLButtonElement;
   submitPersonalBtn: HTMLButtonElement;
   submitConfirmModalEl: HTMLDivElement;
   submitConfirmMessageEl: HTMLParagraphElement;
@@ -78,30 +82,37 @@ const APP_TEMPLATE = `
         <span class="hud-key">Status</span>
         <span id="status" class="hud-value status-value">Paused</span>
         <span class="hud-sep">|</span>
-        <span class="hud-key">Gauge</span>
-        <div class="gauge-wrap" title="Level gauge">
-          <div id="gauge-fill" class="gauge-fill"></div>
-        </div>
-      </div>
-    </section>
+	        <span class="hud-key">Gauge</span>
+	        <div class="gauge-wrap" title="Level gauge">
+	          <div id="gauge-fill" class="gauge-fill"></div>
+	        </div>
+	        <span class="hud-sep">|</span>
+	        <label class="select-wrap hud-difficulty-wrap">
+	          Difficulty (9)
+	          <select id="difficulty">
+	            <option value="1">1 - Normal</option>
+	            <option value="2">2 - Half-glazed / Rotate</option>
+	            <option value="3">3 - Half-glazed / Flip</option>
+	          </select>
+	        </label>
+	      </div>
+	    </section>
 
     <section class="controls fade-in-delayed-2">
-      <label class="select-wrap">
-        Difficulty (9: cycle)
-        <select id="difficulty">
-          <option value="1">1 - Normal</option>
-          <option value="2">2 - Half-glazed / Rotate</option>
-          <option value="3">3 - Half-glazed / Flip</option>
-        </select>
-      </label>
-      <button id="new-game">New (1)</button>
-      <button id="resume-game">Resume (2)</button>
-      <button id="pause-game">Pause (3)</button>
-      <button id="theme-btn">Theme (5)</button>
-      <button id="skills-btn">Skills (6)</button>
-      <button id="quit-game">Quit (4)</button>
-      <button id="toggle-score">Score Board (7)</button>
-      <button id="toggle-key">Keys (8)</button>
+      <div class="controls-left">
+        <button id="mode-btn">Mode: Classic</button>
+        <span id="challenge-info" class="challenge-info">Classic mode</span>
+      </div>
+      <div class="controls-right">
+        <button id="new-game">New (1)</button>
+        <button id="resume-game">Resume (2)</button>
+        <button id="pause-game">Pause (3)</button>
+        <button id="quit-game">Quit (4)</button>
+        <button id="theme-btn">Theme (5)</button>
+        <button id="skills-btn">Skills (6)</button>
+        <button id="toggle-score">Score Board (7)</button>
+        <button id="toggle-key">Keys (8)</button>
+      </div>
     </section>
 
     <main class="arena fade-in-delayed-3">
@@ -119,12 +130,18 @@ const APP_TEMPLATE = `
 
       <aside class="side-column" id="side-column">
         <section class="score-card" id="score-card">
-          <div class="board-header-row">
-            <div id="score-title" class="board-header">GLOBAL TOP 10</div>
-            <div class="score-actions">
-              <button id="personal-score" class="mini-btn" type="button" aria-pressed="false">Personal</button>
-              <button id="submit-personal" class="mini-btn" type="button">Submit</button>
+          <div class="score-head">
+            <div class="board-header-row">
+              <div class="score-toolbar">
+                <div class="score-tabs" role="tablist" aria-label="Scoreboard Views">
+                  <button id="global-score" class="score-tab active" type="button" aria-pressed="true">Global</button>
+                  <button id="daily-score" class="score-tab" type="button" aria-pressed="false">Daily</button>
+                  <button id="personal-score" class="score-tab" type="button" aria-pressed="false">Personal</button>
+                </div>
+                <button id="submit-personal" class="mini-btn score-submit-btn" type="button">Submit</button>
+              </div>
             </div>
+            <div id="score-title" class="board-header score-board-title">GLOBAL TOP 10</div>
           </div>
           <ol id="score-list" class="score-list"></ol>
         </section>
@@ -215,6 +232,8 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     statusEl: must<HTMLSpanElement>(container, "#status"),
     gaugeFillEl: must<HTMLDivElement>(container, "#gauge-fill"),
     difficultyEl: must<HTMLSelectElement>(container, "#difficulty"),
+    modeBtn: must<HTMLButtonElement>(container, "#mode-btn"),
+    challengeInfoEl: must<HTMLSpanElement>(container, "#challenge-info"),
     boxStageEl: must<HTMLDivElement>(container, "#box-stage"),
     boxGridEl: must<HTMLDivElement>(container, "#box-grid"),
     flyingLayerEl: must<HTMLDivElement>(container, "#flying-layer"),
@@ -225,7 +244,9 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     keyCardEl: must<HTMLDivElement>(container, "#key-card"),
     scoreTitleEl: must<HTMLDivElement>(container, "#score-title"),
     scoreListEl: must<HTMLOListElement>(container, "#score-list"),
+    globalScoreBtn: must<HTMLButtonElement>(container, "#global-score"),
     personalScoreBtn: must<HTMLButtonElement>(container, "#personal-score"),
+    dailyScoreBtn: must<HTMLButtonElement>(container, "#daily-score"),
     submitPersonalBtn: must<HTMLButtonElement>(container, "#submit-personal"),
     submitConfirmModalEl: must<HTMLDivElement>(container, "#submit-confirm-modal"),
     submitConfirmMessageEl: must<HTMLParagraphElement>(container, "#submit-confirm-message"),
