@@ -18,6 +18,7 @@ export interface ScoreEntry {
   level: number;
   date: string;
   skillUsage: SkillUsageEntry[];
+  isMe?: boolean;
 }
 
 export interface DailyChallengeStatus {
@@ -56,7 +57,7 @@ class LocalEntryStore {
 
   public async add(entry: ScoreEntry): Promise<void> {
     const scores = this.load();
-    scores.push(entry);
+    scores.push({ ...entry, isMe: entry.isMe === true });
     this.save(this.sort(scores).slice(0, this.maxEntries));
   }
 
@@ -65,7 +66,19 @@ class LocalEntryStore {
     const all = [...existing, ...entries];
     const deduped = new Map<string, ScoreEntry>();
     for (const row of all) {
-      deduped.set(this.entryKey(row), row);
+      const key = this.entryKey(row);
+      const current = deduped.get(key);
+      if (current) {
+        deduped.set(key, {
+          ...row,
+          isMe: current.isMe === true || row.isMe === true,
+        });
+        continue;
+      }
+      deduped.set(key, {
+        ...row,
+        isMe: row.isMe === true,
+      });
     }
     this.save(this.sort([...deduped.values()]).slice(0, this.maxEntries));
   }
@@ -90,6 +103,7 @@ class LocalEntryStore {
           level: entry.level,
           date: entry.date,
           skillUsage: this.normalizeSkillUsage(entry.skillUsage),
+          isMe: entry.isMe === true,
         }));
     } catch {
       return [];
@@ -127,6 +141,7 @@ class LocalEntryStore {
       typeof record.score === "number" &&
       typeof record.level === "number" &&
       typeof record.date === "string" &&
+      (typeof record.isMe === "boolean" || typeof record.isMe === "undefined") &&
       (
         typeof record.skillUsage === "undefined" ||
         this.isSkillUsageArray(record.skillUsage)
@@ -183,7 +198,10 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
   }
 
   public add(entry: ScoreEntry): Promise<void> {
-    return this.globalStore.add(entry);
+    return this.globalStore.add({
+      ...entry,
+      isMe: true,
+    });
   }
 
   public topPersonal(limit = 10): Promise<ScoreEntry[]> {
@@ -212,7 +230,10 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     }
     const currentBest = (await this.resolveDailyStore(challengeKey).top(1))[0] ?? null;
     const improved = isEntryBetter(entry, currentBest);
-    await this.resolveDailyStore(challengeKey).add(entry);
+    await this.resolveDailyStore(challengeKey).add({
+      ...entry,
+      isMe: true,
+    });
     const nextStatus = this.setLocalDailyAttempts(
       challengeKey,
       status.attemptsUsed + 1,
@@ -267,7 +288,10 @@ class TauriScoreboardStore implements ScoreboardStore {
   }
 
   public async add(entry: ScoreEntry): Promise<void> {
-    await this.globalStore.add(entry);
+    await this.globalStore.add({
+      ...entry,
+      isMe: true,
+    });
     try {
       await invoke("submit_global_score", {
         entry,
@@ -316,7 +340,10 @@ class TauriScoreboardStore implements ScoreboardStore {
     });
     const normalized = normalizeDailyChallengeSubmitResult(result, challengeKey);
     if (normalized.accepted) {
-      await this.resolveDailyStore(challengeKey).add(entry);
+      await this.resolveDailyStore(challengeKey).add({
+        ...entry,
+        isMe: true,
+      });
       writeDailyAttempts(window.localStorage, normalized.challengeKey, normalized.attemptsUsed);
     }
     return normalized;
@@ -340,6 +367,7 @@ class TauriScoreboardStore implements ScoreboardStore {
         level: entry.level,
         date: entry.date,
         skillUsage: this.normalizeSkillUsage(entry.skillUsage),
+        isMe: entry.isMe === true,
       }));
   }
 
@@ -353,6 +381,7 @@ class TauriScoreboardStore implements ScoreboardStore {
       typeof record.score === "number" &&
       typeof record.level === "number" &&
       typeof record.date === "string" &&
+      (typeof record.isMe === "boolean" || typeof record.isMe === "undefined") &&
       (
         typeof record.skillUsage === "undefined" ||
         this.isSkillUsageArray(record.skillUsage)

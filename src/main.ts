@@ -29,6 +29,7 @@ import { ThemeManager } from "./ui/theme";
 type ScoreboardView = "global" | "personal" | "daily";
 type NonDailyScoreboardView = "global" | "personal";
 type GameMode = "classic" | "daily";
+type KeyGuidePage = "basic" | "skills";
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) {
@@ -51,10 +52,12 @@ const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
 const DAILY_SCORE_TITLE = "DAILY CHALLENGE TOP 10";
 const DAILY_CHALLENGE_DIFFICULTY: Difficulty = 1;
+const KEY_PAGE_FADE_MS = 220;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
 let keyCardVisible = true;
+let keyGuidePage: KeyGuidePage = "basic";
 let canResume = false;
 let savingGameOver = false;
 let refreshingScoreboard = false;
@@ -76,6 +79,7 @@ let autoHorizontalDirection: "left" | "right" = "right";
 let activeDailyChallengeKey: string | null = null;
 let modeButtonResizeTimer: number | null = null;
 let challengeInfoResizeTimer: number | null = null;
+let keyPageFadeTimer: number | null = null;
 let dailyChallengeStatus: DailyChallengeStatus | null = null;
 let startingDailyChallenge = false;
 const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
@@ -97,6 +101,7 @@ themeManager.apply(0);
 renderer.setStatus("Paused");
 renderer.renderScoreboard([]);
 renderSkillsList();
+syncKeyGuidePageUi({ animate: false });
 syncSkillRunnerUi(skillRunner.getState());
 setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
 syncGameModeUi();
@@ -173,6 +178,14 @@ function bindUiControls(): void {
 
   dom.toggleKeyBtn.addEventListener("click", () => {
     toggleKeyCard();
+  });
+
+  dom.keyPageBasicBtn.addEventListener("click", () => {
+    setKeyGuidePage("basic");
+  });
+
+  dom.keyPageSkillsBtn.addEventListener("click", () => {
+    setKeyGuidePage("skills");
   });
 
   dom.globalScoreBtn.addEventListener("click", () => {
@@ -656,9 +669,95 @@ function isFormTarget(target: EventTarget | null): boolean {
 }
 
 function toggleKeyCard(): void {
-  keyCardVisible = !keyCardVisible;
-  dom.keyCardEl.classList.toggle("hidden", !keyCardVisible);
-  dom.sideColumnEl.classList.toggle("key-hidden", !keyCardVisible);
+  if (!keyCardVisible) {
+    setKeyGuidePage("basic", { animate: false });
+    keyCardVisible = true;
+    dom.keyCardEl.classList.remove("hidden");
+    dom.sideColumnEl.classList.remove("key-hidden");
+    return;
+  }
+
+  if (keyGuidePage === "basic") {
+    setKeyGuidePage("skills");
+    return;
+  }
+
+  setKeyGuidePage("basic", { animate: false });
+  keyCardVisible = false;
+  dom.keyCardEl.classList.add("hidden");
+  dom.sideColumnEl.classList.add("key-hidden");
+}
+
+function setKeyGuidePage(
+  page: KeyGuidePage,
+  options: { animate?: boolean } = {},
+): void {
+  if (keyGuidePage === page) {
+    return;
+  }
+  keyGuidePage = page;
+  syncKeyGuidePageUi(options);
+}
+
+function syncKeyGuidePageUi(
+  options: { animate?: boolean } = {},
+): void {
+  const basicPage = keyGuidePage === "basic";
+  const nextPageEl = basicPage ? dom.keyPageBasicEl : dom.keyPageSkillsEl;
+  const prevPageEl = basicPage ? dom.keyPageSkillsEl : dom.keyPageBasicEl;
+  const shouldAnimate = options.animate !== false && keyCardVisible;
+  dom.keyPageBasicBtn.classList.toggle("active", basicPage);
+  dom.keyPageSkillsBtn.classList.toggle("active", !basicPage);
+  dom.keyPageBasicBtn.setAttribute("aria-pressed", basicPage ? "true" : "false");
+  dom.keyPageSkillsBtn.setAttribute("aria-pressed", basicPage ? "false" : "true");
+
+  if (keyPageFadeTimer !== null) {
+    window.clearTimeout(keyPageFadeTimer);
+    keyPageFadeTimer = null;
+  }
+  dom.keyPageBasicEl.classList.remove("key-page-fade-in", "key-page-fade-out");
+  dom.keyPageSkillsEl.classList.remove("key-page-fade-in", "key-page-fade-out");
+
+  if (!shouldAnimate) {
+    nextPageEl.classList.remove("hidden");
+    prevPageEl.classList.add("hidden");
+    return;
+  }
+
+  prevPageEl.classList.remove("hidden");
+  nextPageEl.classList.remove("hidden");
+  prevPageEl.classList.add("key-page-fade-out");
+  nextPageEl.classList.add("key-page-fade-in");
+
+  keyPageFadeTimer = window.setTimeout(() => {
+    prevPageEl.classList.add("hidden");
+    prevPageEl.classList.remove("key-page-fade-out");
+    nextPageEl.classList.remove("key-page-fade-in");
+    keyPageFadeTimer = null;
+  }, KEY_PAGE_FADE_MS);
+}
+
+function renderKeyGuideSkillsPage(): void {
+  if (skills.length === 0) {
+    dom.keySkillsListEl.innerHTML = [
+      '<p class="key-skills-empty">No skills yet.</p>',
+      '<p class="key-skills-empty">Create one in <code>Skills (6)</code>.</p>',
+    ].join("");
+    return;
+  }
+
+  dom.keySkillsListEl.innerHTML = skills
+    .map((skill) => {
+      const hotkey = skill.hotkey
+        ? `Key ${escapeHtml(skillHotkeyLabel(skill.hotkey))}`
+        : "No hotkey";
+      const sequence = escapeHtml(directionSequenceToLabel(skill.sequence));
+      return `<div class="key-skill-entry">
+        <p class="key-skill-top"><code>${hotkey}</code> · ${escapeHtml(skill.name)}</p>
+        <p class="key-skill-sequence">${sequence}</p>
+      </div>`;
+    })
+    .join("");
 }
 
 function bindGameOverModal(): void {
@@ -724,6 +823,20 @@ function bindScoreDrawerInteractions(): void {
       return;
     }
 
+    const importButton = target.closest(
+      'button[data-action="import-skill"][data-score-index][data-skill-index]',
+    );
+    if (importButton instanceof HTMLButtonElement) {
+      const scoreIndex = Number(importButton.dataset.scoreIndex);
+      const skillIndex = Number(importButton.dataset.skillIndex);
+      if (Number.isInteger(scoreIndex) && Number.isInteger(skillIndex)) {
+        importSkillFromScoreboard(scoreIndex, skillIndex);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+
     const rowEl = target.closest("li[data-score-index]");
     if (!(rowEl instanceof HTMLLIElement)) {
       return;
@@ -744,6 +857,9 @@ function bindScoreDrawerInteractions(): void {
 
     const target = event.target;
     if (!(target instanceof HTMLElement)) {
+      return;
+    }
+    if (target.closest('button[data-action="import-skill"]')) {
       return;
     }
 
@@ -884,7 +1000,10 @@ function collapseExpandedScoreRow(): void {
 
 function renderDisplayedScoreboard(): void {
   renderer.setExpandedScoreIndex(expandedScoreIndex);
-  renderer.renderScoreboard(displayedScoreboardEntries);
+  renderer.renderScoreboard(displayedScoreboardEntries, {
+    allowSkillImport: scoreboardView !== "personal",
+    showMeTag: scoreboardView === "global" || scoreboardView === "daily",
+  });
   syncScoreRowAccessibility();
   applyExpandedScoreRowState();
 }
@@ -896,6 +1015,81 @@ function setDisplayedScoreboardRows(rows: ReadonlyArray<ScoreEntry>): void {
     expandedScoreIndex >= displayedScoreboardEntries.length
   ) {
     expandedScoreIndex = null;
+  }
+}
+
+function importSkillFromScoreboard(scoreIndex: number, skillIndex: number): void {
+  const row = displayedScoreboardEntries[scoreIndex];
+  const usage = row?.skillUsage?.[skillIndex];
+  if (!row || !usage) {
+    return;
+  }
+
+  const name = usage.name.trim().slice(0, MAX_SKILL_NAME_LENGTH);
+  const command = usage.command ? usage.command.trim() : "";
+  if (name.length === 0 || command.length === 0) {
+    window.alert("This skill cannot be imported because command data is missing.");
+    return;
+  }
+
+  let sequence: Direction[] = [];
+  try {
+    sequence = parseDirectionSequence(command);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid skill command.";
+    window.alert(`Failed to import "${name}". ${message}`);
+    return;
+  }
+
+  const sequenceLabel = directionSequenceToLabel(sequence);
+  const alreadyExists = skills.some((skill) => (
+    skill.name === name &&
+    directionSequenceToLabel(skill.sequence) === sequenceLabel
+  ));
+  if (alreadyExists) {
+    window.alert(`"${name}" is already in your skill list.`);
+    return;
+  }
+
+  const hotkeyInput = window.prompt(
+    `Import "${name}"\n\nSet hotkey now (optional).\nExamples: KeyZ, Digit1, Slash, Tab, F6\n\nLeave blank for none.`,
+    "",
+  );
+  if (hotkeyInput === null) {
+    return;
+  }
+
+  let hotkey: string | null = null;
+  try {
+    hotkey = normalizeSkillHotkeyInput(hotkeyInput);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Invalid hotkey.";
+    window.alert(message);
+    return;
+  }
+
+  if (hotkey && skills.some((skill) => skill.hotkey === hotkey)) {
+    window.alert(`"${skillHotkeyLabel(hotkey)}" is already used by another skill.`);
+    return;
+  }
+
+  try {
+    const created = skillStore.create(name, sequence, hotkey);
+    skills = skillStore.list();
+    renderSkillsList();
+
+    const hotkeyMessage = created.hotkey
+      ? ` (hotkey: ${skillHotkeyLabel(created.hotkey)})`
+      : "";
+    const message = `Imported "${created.name}"${hotkeyMessage}.`;
+    if (isSkillsModalOpen()) {
+      setSkillFormMessage(message, "good");
+    } else {
+      window.alert(message);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to import skill.";
+    window.alert(message);
   }
 }
 
@@ -1083,6 +1277,7 @@ function resetSkillForm(keepMessage = false): void {
 }
 
 function renderSkillsList(): void {
+  renderKeyGuideSkillsPage();
   const shouldAnimateResize = isSkillsModalOpen();
   const previousHeight = shouldAnimateResize
     ? dom.skillsDialogEl.getBoundingClientRect().height
@@ -1599,6 +1794,7 @@ function cloneScoreEntry(entry: ScoreEntry): ScoreEntry {
     level: entry.level,
     date: entry.date,
     skillUsage: cloneSkillUsageList(entry.skillUsage),
+    isMe: entry.isMe === true,
   };
 }
 

@@ -9,6 +9,11 @@ interface ColorSpec {
   perCharColor?: Map<number, string>;
 }
 
+interface ScoreboardRenderOptions {
+  allowSkillImport?: boolean;
+  showMeTag?: boolean;
+}
+
 export class TorusRenderer {
   private status: GameStatus = "Paused";
   private scoreVisible = true;
@@ -53,7 +58,12 @@ export class TorusRenderer {
     this.dom.scoreCardEl.classList.toggle("hidden", !visible);
   }
 
-  public renderScoreboard(entries: ReadonlyArray<ScoreEntry>): void {
+  public renderScoreboard(
+    entries: ReadonlyArray<ScoreEntry>,
+    options: ScoreboardRenderOptions = {},
+  ): void {
+    const allowSkillImport = options.allowSkillImport !== false;
+    const showMeTag = options.showMeTag === true;
     if (entries.length === 0) {
       this.dom.scoreListEl.innerHTML = '<li class="empty-row">No records yet</li>';
       return;
@@ -64,19 +74,43 @@ export class TorusRenderer {
         const date = formatDate(row.date);
         const skillMark = row.skillUsage.length > 0 ? " · Skill" : "";
         const isExpanded = this.expandedScoreIndex === index;
+        const meTag = showMeTag && row.isMe
+          ? '<span class="score-me-tag" aria-label="My record">Me</span>'
+          : "";
         const drawerBody = row.skillUsage.length === 0
           ? '<li class="empty">No skill information recorded.</li>'
           : row.skillUsage
-            .map((usage) => {
+            .map((usage, skillIndex) => {
               const command = usage.command ? usage.command : "-";
-              return `<li>
-                <div class="score-drawer-item-name">${escapeHtml(usage.name)}</div>
-                <div class="score-drawer-item-command">${escapeHtml(command)}</div>
+              const canImport = (
+                allowSkillImport &&
+                Boolean(usage.command && usage.command.trim().length > 0)
+              );
+              const importDisabledAttr = canImport ? "" : "disabled";
+              const importTitle = canImport ? "Import skill" : "No command to import";
+              const importButton = allowSkillImport
+                ? `<button
+                  type="button"
+                  class="mini-btn score-drawer-import-btn"
+                  data-action="import-skill"
+                  data-score-index="${index}"
+                  data-skill-index="${skillIndex}"
+                  title="${importTitle}"
+                  aria-label="${importTitle}"
+                  ${importDisabledAttr}
+                >${renderImportIconMarkup()}</button>`
+                : "";
+              return `<li class="score-drawer-skill-item">
+                <div class="score-drawer-item-main">
+                  <div class="score-drawer-item-name" title="${escapeHtml(usage.name)}">${escapeHtml(usage.name)}</div>
+                  <div class="score-drawer-item-command" title="${escapeHtml(command)}">${escapeHtml(command)}</div>
+                </div>
+                ${importButton}
               </li>`;
             })
             .join("");
         return `<li class="score-row${isExpanded ? " expanded" : ""}" data-score-index="${index}" role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}">
-          <span class="name">${escapeHtml(row.user)}</span>
+          <span class="name-wrap"><span class="name" title="${escapeHtml(row.user)}">${escapeHtml(row.user)}</span>${meTag}</span>
           <span class="point">${row.score}</span>
           <span class="meta">Lv.${row.level} · ${date}${skillMark}</span>
           <div class="score-drawer">
@@ -349,4 +383,13 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function renderImportIconMarkup(): string {
+  // Lucide "import" icon
+  return `<svg class="score-drawer-import-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+    <path d="M12 3v12" />
+    <path d="m8 11 4 4 4-4" />
+    <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
+  </svg>`;
 }
