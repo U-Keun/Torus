@@ -40,6 +40,19 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure Tag Commit Is On Main
+        if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --force origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/main"; then
+            echo "Tag '${GITHUB_REF_NAME}' points to commit '${GITHUB_SHA}', which is not on origin/main."
+            exit 1
+          fi
 
       - name: Setup Node
         uses: actions/setup-node@v4
