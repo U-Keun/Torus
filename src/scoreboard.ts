@@ -20,13 +20,27 @@ export interface ScoreEntry {
   skillUsage: SkillUsageEntry[];
 }
 
+export interface DailyChallengeStatus {
+  challengeKey: string;
+  attemptsUsed: number;
+  attemptsLeft: number;
+  maxAttempts: number;
+  canSubmit: boolean;
+}
+
+export interface DailyChallengeSubmitResult extends DailyChallengeStatus {
+  accepted: boolean;
+  improved: boolean;
+}
+
 export interface ScoreboardStore {
   top(limit?: number): Promise<ScoreEntry[]>;
   add(entry: ScoreEntry): Promise<void>;
   topPersonal(limit?: number): Promise<ScoreEntry[]>;
   addPersonal(entry: ScoreEntry): Promise<void>;
   topDaily(challengeKey: string, limit?: number): Promise<ScoreEntry[]>;
-  addDaily(challengeKey: string, entry: ScoreEntry): Promise<void>;
+  addDaily(challengeKey: string, entry: ScoreEntry): Promise<DailyChallengeSubmitResult>;
+  getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus>;
 }
 
 class LocalEntryStore {
@@ -161,6 +175,7 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     private readonly globalStore: LocalEntryStore,
     private readonly personalStore: LocalEntryStore,
     private readonly resolveDailyStore: DailyStoreResolver,
+    private readonly storage: Storage = window.localStorage,
   ) {}
 
   public top(limit = 10): Promise<ScoreEntry[]> {
@@ -183,8 +198,46 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     return this.resolveDailyStore(challengeKey).top(limit);
   }
 
-  public addDaily(challengeKey: string, entry: ScoreEntry): Promise<void> {
-    return this.resolveDailyStore(challengeKey).add(entry);
+  public async addDaily(
+    challengeKey: string,
+    entry: ScoreEntry,
+  ): Promise<DailyChallengeSubmitResult> {
+    const status = this.getLocalDailyStatus(challengeKey);
+    if (!status.canSubmit) {
+      return {
+        ...status,
+        accepted: false,
+        improved: false,
+      };
+    }
+    const currentBest = (await this.resolveDailyStore(challengeKey).top(1))[0] ?? null;
+    const improved = isEntryBetter(entry, currentBest);
+    await this.resolveDailyStore(challengeKey).add(entry);
+    const nextStatus = this.setLocalDailyAttempts(
+      challengeKey,
+      status.attemptsUsed + 1,
+    );
+    return {
+      ...nextStatus,
+      accepted: true,
+      improved,
+    };
+  }
+
+  public getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus> {
+    return Promise.resolve(this.getLocalDailyStatus(challengeKey));
+  }
+
+  private getLocalDailyStatus(challengeKey: string): DailyChallengeStatus {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const attemptsUsed = readDailyAttempts(this.storage, normalized);
+    return toDailyChallengeStatus(normalized, attemptsUsed);
+  }
+
+  private setLocalDailyAttempts(challengeKey: string, attemptsUsed: number): DailyChallengeStatus {
+    const normalized = normalizeChallengeKey(challengeKey);
+    writeDailyAttempts(this.storage, normalized, attemptsUsed);
+    return toDailyChallengeStatus(normalized, attemptsUsed);
   }
 }
 
@@ -242,12 +295,56 @@ class TauriScoreboardStore implements ScoreboardStore {
     return this.personalStore.add(entry);
   }
 
-  public topDaily(challengeKey: string, limit = 10): Promise<ScoreEntry[]> {
-    return this.resolveDailyStore(challengeKey).top(limit);
+  public async topDaily(challengeKey: string, limit = 10): Promise<ScoreEntry[]> {
+    try {
+      const rows = await invoke<ScoreEntry[]>("fetch_daily_scores", {
+        challengeKey,
+        limit,
+        supabaseUrl: this.supabaseUrl || null,
+        supabaseAnonKey: this.supabaseAnonKey || null,
+      });
+      const mapped = rows
+        .filter((entry): entry is ScoreEntry => this.isScoreEntry(entry))
+        .map((entry) => ({
+          user: entry.user,
+          score: entry.score,
+          level: entry.level,
+          date: entry.date,
+          skillUsage: this.normalizeSkillUsage(entry.skillUsage),
+        }));
+      this.resolveDailyStore(challengeKey).merge(mapped);
+      return mapped.slice(0, limit);
+    } catch (error) {
+      console.warn("Failed to load daily scores from Tauri backend. Using local cache.", error);
+      return this.resolveDailyStore(challengeKey).top(limit);
+    }
   }
 
-  public addDaily(challengeKey: string, entry: ScoreEntry): Promise<void> {
-    return this.resolveDailyStore(challengeKey).add(entry);
+  public async addDaily(
+    challengeKey: string,
+    entry: ScoreEntry,
+  ): Promise<DailyChallengeSubmitResult> {
+    const result = await invoke<DailyChallengeSubmitResult>("submit_daily_score", {
+      challengeKey,
+      entry,
+      supabaseUrl: this.supabaseUrl || null,
+      supabaseAnonKey: this.supabaseAnonKey || null,
+    });
+    const normalized = normalizeDailyChallengeSubmitResult(result, challengeKey);
+    if (normalized.accepted) {
+      await this.resolveDailyStore(challengeKey).add(entry);
+      writeDailyAttempts(window.localStorage, normalized.challengeKey, normalized.attemptsUsed);
+    }
+    return normalized;
+  }
+
+  public async getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus> {
+    const status = await invoke<DailyChallengeStatus>("fetch_daily_status", {
+      challengeKey,
+      supabaseUrl: this.supabaseUrl || null,
+      supabaseAnonKey: this.supabaseAnonKey || null,
+    });
+    return normalizeDailyChallengeStatus(status, challengeKey);
   }
 
   private isScoreEntry(entry: unknown): entry is ScoreEntry {
@@ -312,7 +409,12 @@ export function createScoreboardStore(): ScoreboardStore {
 
   if (!supabaseUrl || !supabaseAnonKey) {
     console.info("Supabase env is not configured. Global score sync is disabled.");
-    return new LocalOnlyScoreboardStore(globalStore, personalStore, resolveDailyStore);
+    return new LocalOnlyScoreboardStore(
+      globalStore,
+      personalStore,
+      resolveDailyStore,
+      window.localStorage,
+    );
   }
 
   return new TauriScoreboardStore(
@@ -341,6 +443,8 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
 }
 
 type DailyStoreResolver = (challengeKey: string) => LocalEntryStore;
+const DAILY_CHALLENGE_MAX_ATTEMPTS = 3;
+const DAILY_ATTEMPTS_STORAGE_PREFIX = "torus-daily-attempts-v1:";
 
 function createDailyStoreResolver(
   storage: Storage,
@@ -369,4 +473,81 @@ function normalizeChallengeKey(challengeKey: string): string {
     return trimmed;
   }
   return "unknown";
+}
+
+function dailyAttemptsStorageKey(challengeKey: string): string {
+  return `${DAILY_ATTEMPTS_STORAGE_PREFIX}${challengeKey}`;
+}
+
+function readDailyAttempts(storage: Storage, challengeKey: string): number {
+  try {
+    const raw = storage.getItem(dailyAttemptsStorageKey(challengeKey));
+    if (!raw) {
+      return 0;
+    }
+    const value = Number(raw);
+    if (!Number.isFinite(value)) {
+      return 0;
+    }
+    return clampAttempts(value);
+  } catch {
+    return 0;
+  }
+}
+
+function writeDailyAttempts(storage: Storage, challengeKey: string, attemptsUsed: number): void {
+  try {
+    storage.setItem(dailyAttemptsStorageKey(challengeKey), String(clampAttempts(attemptsUsed)));
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
+function clampAttempts(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.min(DAILY_CHALLENGE_MAX_ATTEMPTS, Math.max(0, Math.floor(value)));
+}
+
+function toDailyChallengeStatus(challengeKey: string, attemptsUsed: number): DailyChallengeStatus {
+  const used = clampAttempts(attemptsUsed);
+  const attemptsLeft = Math.max(0, DAILY_CHALLENGE_MAX_ATTEMPTS - used);
+  return {
+    challengeKey,
+    attemptsUsed: used,
+    attemptsLeft,
+    maxAttempts: DAILY_CHALLENGE_MAX_ATTEMPTS,
+    canSubmit: attemptsLeft > 0,
+  };
+}
+
+function normalizeDailyChallengeStatus(
+  raw: DailyChallengeStatus,
+  fallbackChallengeKey: string,
+): DailyChallengeStatus {
+  const challengeKey = normalizeChallengeKey(raw.challengeKey || fallbackChallengeKey);
+  return toDailyChallengeStatus(challengeKey, raw.attemptsUsed);
+}
+
+function normalizeDailyChallengeSubmitResult(
+  raw: DailyChallengeSubmitResult,
+  fallbackChallengeKey: string,
+): DailyChallengeSubmitResult {
+  const status = normalizeDailyChallengeStatus(raw, fallbackChallengeKey);
+  return {
+    ...status,
+    accepted: raw.accepted === true,
+    improved: raw.improved === true,
+  };
+}
+
+function isEntryBetter(entry: ScoreEntry, best: ScoreEntry | null): boolean {
+  if (!best) {
+    return true;
+  }
+  if (entry.score !== best.score) {
+    return entry.score > best.score;
+  }
+  return entry.level > best.level;
 }

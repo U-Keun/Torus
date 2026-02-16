@@ -16,6 +16,11 @@ const MAX_SKILL_USAGE_ITEMS: usize = 20;
 const MAX_SKILL_NAME_LEN: usize = 20;
 const MAX_SKILL_HOTKEY_LEN: usize = 16;
 const MAX_SKILL_COMMAND_LEN: usize = 120;
+const CLASSIC_MODE: &str = "classic";
+const DAILY_MODE: &str = "daily";
+const CLASSIC_CHALLENGE_KEY: &str = "classic";
+const DAILY_MAX_ATTEMPTS: i64 = 3;
+const DAILY_RPC_NAME: &str = "submit_daily_score";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillUsage {
@@ -45,6 +50,12 @@ struct ScoreRow {
     skill_usage: Option<Vec<SkillUsage>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DailyAttemptsRow {
+    #[serde(default)]
+    attempts_used: Option<i64>,
+}
+
 #[derive(Debug, Serialize)]
 struct SubmitScorePayload<'a> {
     player_name: &'a str,
@@ -53,12 +64,56 @@ struct SubmitScorePayload<'a> {
     created_at: &'a str,
     client_uuid: &'a str,
     skill_usage: &'a [SkillUsage],
+    mode: &'a str,
+    challenge_key: &'a str,
 }
 
 #[derive(Debug, Clone)]
 struct SupabaseConfig {
     url: String,
     anon_key: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct DailyStatus {
+    #[serde(rename = "challengeKey")]
+    challenge_key: String,
+    #[serde(rename = "attemptsUsed")]
+    attempts_used: i64,
+    #[serde(rename = "attemptsLeft")]
+    attempts_left: i64,
+    #[serde(rename = "maxAttempts")]
+    max_attempts: i64,
+    #[serde(rename = "canSubmit")]
+    can_submit: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DailySubmitResult {
+    pub accepted: bool,
+    #[serde(default)]
+    pub improved: bool,
+    #[serde(rename = "challengeKey")]
+    pub challenge_key: String,
+    #[serde(rename = "attemptsUsed")]
+    pub attempts_used: i64,
+    #[serde(rename = "attemptsLeft")]
+    pub attempts_left: i64,
+    #[serde(rename = "maxAttempts")]
+    pub max_attempts: i64,
+    #[serde(rename = "canSubmit")]
+    pub can_submit: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct DailySubmitPayload<'a> {
+    p_client_uuid: &'a str,
+    p_challenge_key: &'a str,
+    p_player_name: &'a str,
+    p_score: i64,
+    p_level: i64,
+    p_created_at: &'a str,
+    p_skill_usage: &'a [SkillUsage],
 }
 
 #[tauri::command]
@@ -118,6 +173,52 @@ pub async fn submit_global_score(
     Ok(())
 }
 
+#[tauri::command]
+pub async fn fetch_daily_scores(
+    challenge_key: String,
+    limit: Option<u32>,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<Vec<ScoreEntry>, String> {
+    let top_limit = normalize_limit(limit);
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    fetch_remote_daily_scores(&config, &normalized_challenge_key, top_limit).await
+}
+
+#[tauri::command]
+pub async fn fetch_daily_status(
+    app: AppHandle,
+    challenge_key: String,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<DailyStatus, String> {
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let device_uuid = get_or_create_device_uuid(&app)?;
+    let attempts_used =
+        fetch_remote_daily_attempts(&config, &normalized_challenge_key, &device_uuid).await?;
+    Ok(build_daily_status(&normalized_challenge_key, attempts_used))
+}
+
+#[tauri::command]
+pub async fn submit_daily_score(
+    app: AppHandle,
+    challenge_key: String,
+    entry: ScoreEntry,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<DailySubmitResult, String> {
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let entry = sanitize_entry(entry)?;
+    let device_uuid = get_or_create_device_uuid(&app)?;
+    submit_remote_daily_score(&config, &normalized_challenge_key, &entry, &device_uuid).await
+}
+
 fn normalize_limit(limit: Option<u32>) -> usize {
     let raw = limit.unwrap_or(DEFAULT_TOP_LIMIT as u32);
     raw.clamp(1, MAX_TOP_LIMIT as u32) as usize
@@ -135,6 +236,39 @@ fn normalize_supabase_config(
         .filter(|value| !value.is_empty())?;
 
     Some(SupabaseConfig { url, anon_key })
+}
+
+fn normalize_daily_challenge_key(raw: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.len() != 10 {
+        return Err("daily challenge key must be in YYYY-MM-DD format".into());
+    }
+    let bytes = trimmed.as_bytes();
+    for (index, ch) in bytes.iter().enumerate() {
+        let is_dash = index == 4 || index == 7;
+        if is_dash {
+            if *ch != b'-' {
+                return Err("daily challenge key must be in YYYY-MM-DD format".into());
+            }
+            continue;
+        }
+        if !(*ch >= b'0' && *ch <= b'9') {
+            return Err("daily challenge key must be in YYYY-MM-DD format".into());
+        }
+    }
+    Ok(trimmed.to_string())
+}
+
+fn build_daily_status(challenge_key: &str, attempts_used: i64) -> DailyStatus {
+    let used = attempts_used.clamp(0, DAILY_MAX_ATTEMPTS);
+    let left = DAILY_MAX_ATTEMPTS - used;
+    DailyStatus {
+        challenge_key: challenge_key.to_string(),
+        attempts_used: used,
+        attempts_left: left,
+        max_attempts: DAILY_MAX_ATTEMPTS,
+        can_submit: left > 0,
+    }
 }
 
 fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
@@ -314,6 +448,8 @@ async fn fetch_remote_scores(
         .get(endpoint)
         .query(&[
             ("select", "player_name,score,level,created_at,skill_usage"),
+            ("mode", "eq.classic"),
+            ("challenge_key", "eq.classic"),
             ("order", "score.desc,level.desc,created_at.desc"),
             ("limit", &limit.to_string()),
         ])
@@ -375,6 +511,8 @@ async fn fetch_remote_score_by_uuid(
         .query(&[
             ("select", "player_name,score,level,created_at,skill_usage"),
             ("client_uuid", filter.as_str()),
+            ("mode", "eq.classic"),
+            ("challenge_key", "eq.classic"),
             ("limit", "1"),
         ])
         .header("apikey", &config.anon_key)
@@ -418,6 +556,8 @@ async fn insert_remote_score(
         created_at: &entry.date,
         client_uuid,
         skill_usage: &entry.skill_usage,
+        mode: CLASSIC_MODE,
+        challenge_key: CLASSIC_CHALLENGE_KEY,
     };
 
     let client = create_http_client()?;
@@ -454,12 +594,18 @@ async fn update_remote_score(
         created_at: &entry.date,
         client_uuid,
         skill_usage: &entry.skill_usage,
+        mode: CLASSIC_MODE,
+        challenge_key: CLASSIC_CHALLENGE_KEY,
     };
 
     let client = create_http_client()?;
     let response = client
         .patch(endpoint)
-        .query(&[("client_uuid", filter.as_str())])
+        .query(&[
+            ("client_uuid", filter.as_str()),
+            ("mode", "eq.classic"),
+            ("challenge_key", "eq.classic"),
+        ])
         .header("apikey", &config.anon_key)
         .header("Authorization", format!("Bearer {}", config.anon_key))
         .header("Prefer", "return=minimal")
@@ -475,6 +621,153 @@ async fn update_remote_score(
     }
 
     Ok(())
+}
+
+async fn fetch_remote_daily_scores(
+    config: &SupabaseConfig,
+    challenge_key: &str,
+    limit: usize,
+) -> Result<Vec<ScoreEntry>, String> {
+    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
+    let mode_filter = format!("eq.{DAILY_MODE}");
+    let challenge_filter = format!("eq.{challenge_key}");
+    let client = create_http_client()?;
+    let response = client
+        .get(endpoint)
+        .query(&[
+            ("select", "player_name,score,level,created_at,skill_usage"),
+            ("mode", mode_filter.as_str()),
+            ("challenge_key", challenge_filter.as_str()),
+            ("order", "score.desc,level.desc,created_at.desc"),
+            ("limit", &limit.to_string()),
+        ])
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily fetch failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("supabase daily fetch failed with {status}: {body}"));
+    }
+
+    let rows = response
+        .json::<Vec<ScoreRow>>()
+        .await
+        .map_err(|error| format!("failed to decode supabase response: {error}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| ScoreEntry {
+            user: row.player_name,
+            score: row.score,
+            level: row.level,
+            date: row.created_at,
+            skill_usage: row.skill_usage.unwrap_or_default(),
+        })
+        .collect())
+}
+
+async fn fetch_remote_daily_attempts(
+    config: &SupabaseConfig,
+    challenge_key: &str,
+    client_uuid: &str,
+) -> Result<i64, String> {
+    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
+    let mode_filter = format!("eq.{DAILY_MODE}");
+    let challenge_filter = format!("eq.{challenge_key}");
+    let uuid_filter = format!("eq.{client_uuid}");
+    let client = create_http_client()?;
+    let response = client
+        .get(endpoint)
+        .query(&[
+            ("select", "attempts_used"),
+            ("mode", mode_filter.as_str()),
+            ("challenge_key", challenge_filter.as_str()),
+            ("client_uuid", uuid_filter.as_str()),
+            ("limit", "1"),
+        ])
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily status fetch failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "supabase daily status fetch failed with {status}: {body}"
+        ));
+    }
+
+    let rows = response
+        .json::<Vec<DailyAttemptsRow>>()
+        .await
+        .map_err(|error| format!("failed to decode supabase response: {error}"))?;
+    let attempts = rows
+        .into_iter()
+        .next()
+        .and_then(|row| row.attempts_used)
+        .unwrap_or(0);
+    Ok(attempts.clamp(0, DAILY_MAX_ATTEMPTS))
+}
+
+async fn submit_remote_daily_score(
+    config: &SupabaseConfig,
+    challenge_key: &str,
+    entry: &ScoreEntry,
+    client_uuid: &str,
+) -> Result<DailySubmitResult, String> {
+    let endpoint = format!(
+        "{}/rest/v1/rpc/{}",
+        config.url.trim_end_matches('/'),
+        DAILY_RPC_NAME
+    );
+    let payload = DailySubmitPayload {
+        p_client_uuid: client_uuid,
+        p_challenge_key: challenge_key,
+        p_player_name: &entry.user,
+        p_score: entry.score,
+        p_level: entry.level,
+        p_created_at: &entry.date,
+        p_skill_usage: &entry.skill_usage,
+    };
+
+    let client = create_http_client()?;
+    let response = client
+        .post(endpoint)
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily submit failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "supabase daily submit failed with {status}: {body}\n\
+Ensure /supabase/schema.sql has been applied (including RPC {DAILY_RPC_NAME})."
+        ));
+    }
+
+    let result = response
+        .json::<DailySubmitResult>()
+        .await
+        .map_err(|error| format!("failed to decode daily submit response: {error}"))?;
+    Ok(DailySubmitResult {
+        accepted: result.accepted,
+        improved: result.improved,
+        challenge_key: challenge_key.to_string(),
+        attempts_used: result.attempts_used.clamp(0, DAILY_MAX_ATTEMPTS),
+        attempts_left: result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS),
+        max_attempts: DAILY_MAX_ATTEMPTS,
+        can_submit: result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS) > 0,
+    })
 }
 
 fn is_better_score(incoming: &ScoreEntry, existing: &ScoreEntry) -> bool {

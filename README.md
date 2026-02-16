@@ -89,11 +89,20 @@ If these are not set, online sync is disabled and scoreboard works in local-only
 The schema includes:
 
 - `scores.player_name` (`text`)
-- `scores.client_uuid` (`text`, unique)
+- `scores.client_uuid` (`text`)
 - `scores.score` (`integer`)
 - `scores.level` (`integer`)
 - `scores.skill_usage` (`jsonb`, default `[]`)
+- `scores.mode` (`text`: `classic` | `daily`)
+- `scores.challenge_key` (`text`: `classic` or `YYYY-MM-DD`)
+- `scores.attempts_used` (`integer`: daily only, `1..3`)
 - `scores.created_at` (`timestamptz`)
+- `submit_daily_score(...)` RPC function (server-enforced daily attempts)
+
+RLS behavior:
+
+- Direct `insert/update` on `scores` (anon client) is limited to `classic` rows only.
+- Daily writes are allowed only through `submit_daily_score(...)` RPC.
 
 Ranking query order is:
 
@@ -109,11 +118,18 @@ Default fetch size is top 10.
 - Online submission is optional.
 - Submitted scores include used skill metadata (`skill_usage`).
 - Tauri backend generates and stores a UUID at first run (`device-uuid-v1.txt` in app data dir).
-- When submitting online:
-  - If UUID does not exist in DB: insert.
-  - If UUID exists: update only if new score is better (or same score with higher level).
+- Classic mode online submission:
+  - Uses a single row per install via `(mode='classic', challenge_key='classic', client_uuid)`.
+  - If row does not exist: insert.
+  - If row exists: update only if new score is better (or same score with higher level).
+- Daily Challenge mode online submission:
+  - Uses `(mode='daily', challenge_key=UTC date, client_uuid)`.
+  - Daily runs are auto-submitted (no opt-out).
+  - Server RPC enforces maximum 3 attempts per UTC day.
+  - `attempts_used` increments even when score does not improve.
+  - When daily best improves, that run is also auto-submitted to classic Global (same best-upsert rule).
 
-This prevents duplicate online entries from the same installation.
+This prevents duplicate classic entries and makes daily attempt limits tamper-resistant.
 
 ## Build
 

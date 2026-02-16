@@ -8,7 +8,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             scoreboard::fetch_global_scores,
-            scoreboard::submit_global_score
+            scoreboard::submit_global_score,
+            scoreboard::fetch_daily_scores,
+            scoreboard::fetch_daily_status,
+            scoreboard::submit_daily_score
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
