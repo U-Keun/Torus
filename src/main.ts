@@ -5,6 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { type Difficulty, type GameOverPayload, type GameSnapshot, TorusGame } from "./game";
 import {
   createScoreboardStore,
+  type DailyChallengeSubmitResult,
   type DailyChallengeStatus,
   type ScoreEntry,
   type SkillUsageEntry,
@@ -413,13 +414,11 @@ async function refreshDailyChallengeStatus(
 ): Promise<DailyChallengeStatus | null> {
   try {
     const status = await scoreboardStore.getDailyStatus(challengeKey);
-    dailyChallengeStatus = status;
-    syncGameModeUi();
+    setDailyChallengeStatus(status);
     return status;
   } catch (error) {
     console.warn("Failed to load daily challenge status.", error);
-    dailyChallengeStatus = null;
-    syncGameModeUi();
+    setDailyChallengeStatus(null);
     return null;
   }
 }
@@ -890,6 +889,16 @@ function renderDisplayedScoreboard(): void {
   applyExpandedScoreRowState();
 }
 
+function setDisplayedScoreboardRows(rows: ReadonlyArray<ScoreEntry>): void {
+  displayedScoreboardEntries = rows.map((row) => cloneScoreEntry(row));
+  if (
+    expandedScoreIndex !== null &&
+    expandedScoreIndex >= displayedScoreboardEntries.length
+  ) {
+    expandedScoreIndex = null;
+  }
+}
+
 function applyExpandedScoreRowState(): void {
   const rows = dom.scoreListEl.querySelectorAll<HTMLLIElement>("li.score-row");
   rows.forEach((row) => {
@@ -1262,14 +1271,7 @@ async function saveGameOverScore(): Promise<void> {
     if (gameMode === "daily") {
       const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
       const dailyResult = await scoreboardStore.addDaily(challengeKey, entry);
-      dailyChallengeStatus = {
-        challengeKey: dailyResult.challengeKey,
-        attemptsUsed: dailyResult.attemptsUsed,
-        attemptsLeft: dailyResult.attemptsLeft,
-        maxAttempts: dailyResult.maxAttempts,
-        canSubmit: dailyResult.canSubmit,
-      };
-      syncGameModeUi();
+      setDailyChallengeStatus(toDailyChallengeStatus(dailyResult));
       if (!dailyResult.accepted) {
         throw new Error(
           `Daily Challenge limit reached (${dailyResult.attemptsUsed}/${dailyResult.maxAttempts}).`,
@@ -1278,12 +1280,10 @@ async function saveGameOverScore(): Promise<void> {
       shouldSubmitGlobalFromDaily = dailyResult.improved;
     }
     if (shouldSubmitGlobalFromDaily) {
-      await scoreboardStore.add(entry);
-      await refreshGlobalTop10Data();
+      await submitEntryToGlobalAndRefresh(entry);
       shouldRefreshGlobal = true;
     } else if (dom.gameOverSubmitDbEl.checked && isDeviceBest) {
-      await scoreboardStore.add(entry);
-      await refreshGlobalTop10Data();
+      await submitEntryToGlobalAndRefresh(entry);
       shouldRefreshGlobal = true;
     }
     if (
@@ -1324,21 +1324,8 @@ async function refreshScoreboard(): Promise<void> {
   }
 
   try {
-    let rows: ScoreEntry[] = [];
-    if (targetView === "personal") {
-      rows = await scoreboardStore.topPersonal(10);
-    } else if (targetView === "daily") {
-      rows = await scoreboardStore.topDaily(getCurrentDailyChallenge().key, 10);
-    } else {
-      rows = await scoreboardStore.top(10);
-    }
-    displayedScoreboardEntries = rows.map((row) => cloneScoreEntry(row));
-    if (
-      expandedScoreIndex !== null &&
-      expandedScoreIndex >= displayedScoreboardEntries.length
-    ) {
-      expandedScoreIndex = null;
-    }
+    const rows = await fetchScoreboardRows(targetView);
+    setDisplayedScoreboardRows(rows);
     renderDisplayedScoreboard();
   } finally {
     refreshingScoreboard = false;
@@ -1350,16 +1337,40 @@ async function refreshGlobalTop10Data(): Promise<void> {
     renderer.renderScoreboardLoading(SHARED_SCOREBOARD_LOADING_MESSAGE);
   }
   const globalRows = await scoreboardStore.top(10);
-  displayedScoreboardEntries = globalRows.map((row) => cloneScoreEntry(row));
-  if (
-    expandedScoreIndex !== null &&
-    expandedScoreIndex >= displayedScoreboardEntries.length
-  ) {
-    expandedScoreIndex = null;
-  }
+  setDisplayedScoreboardRows(globalRows);
   if (scoreboardView === "global") {
     renderDisplayedScoreboard();
   }
+}
+
+function setDailyChallengeStatus(status: DailyChallengeStatus | null): void {
+  dailyChallengeStatus = status;
+  syncGameModeUi();
+}
+
+function toDailyChallengeStatus(result: DailyChallengeSubmitResult): DailyChallengeStatus {
+  return {
+    challengeKey: result.challengeKey,
+    attemptsUsed: result.attemptsUsed,
+    attemptsLeft: result.attemptsLeft,
+    maxAttempts: result.maxAttempts,
+    canSubmit: result.canSubmit,
+  };
+}
+
+async function submitEntryToGlobalAndRefresh(entry: ScoreEntry): Promise<void> {
+  await scoreboardStore.add(entry);
+  await refreshGlobalTop10Data();
+}
+
+async function fetchScoreboardRows(view: ScoreboardView): Promise<ScoreEntry[]> {
+  if (view === "personal") {
+    return scoreboardStore.topPersonal(10);
+  }
+  if (view === "daily") {
+    return scoreboardStore.topDaily(getCurrentDailyChallenge().key, 10);
+  }
+  return scoreboardStore.top(10);
 }
 
 async function openSubmitConfirmModal(): Promise<void> {
@@ -1422,10 +1433,9 @@ async function confirmSubmitPersonalBest(): Promise<void> {
   dom.submitPersonalBtn.textContent = "Submitting";
 
   try {
-    await scoreboardStore.add(pendingSubmitEntry);
+    await submitEntryToGlobalAndRefresh(pendingSubmitEntry);
     dom.submitPersonalBtn.textContent = "Submitted";
     closeSubmitConfirmModal(true);
-    await refreshGlobalTop10Data();
   } catch (error) {
     console.warn("Failed to submit personal best score.", error);
     dom.submitPersonalBtn.textContent = "Retry";

@@ -257,15 +257,7 @@ class TauriScoreboardStore implements ScoreboardStore {
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
       });
-      const mapped = rows
-        .filter((entry): entry is ScoreEntry => this.isScoreEntry(entry))
-        .map((entry) => ({
-          user: entry.user,
-          score: entry.score,
-          level: entry.level,
-          date: entry.date,
-          skillUsage: this.normalizeSkillUsage(entry.skillUsage),
-        }));
+      const mapped = this.normalizeRemoteRows(rows);
       this.globalStore.merge(mapped);
       return mapped.slice(0, limit);
     } catch (error) {
@@ -303,15 +295,7 @@ class TauriScoreboardStore implements ScoreboardStore {
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
       });
-      const mapped = rows
-        .filter((entry): entry is ScoreEntry => this.isScoreEntry(entry))
-        .map((entry) => ({
-          user: entry.user,
-          score: entry.score,
-          level: entry.level,
-          date: entry.date,
-          skillUsage: this.normalizeSkillUsage(entry.skillUsage),
-        }));
+      const mapped = this.normalizeRemoteRows(rows);
       this.resolveDailyStore(challengeKey).merge(mapped);
       return mapped.slice(0, limit);
     } catch (error) {
@@ -345,6 +329,18 @@ class TauriScoreboardStore implements ScoreboardStore {
       supabaseAnonKey: this.supabaseAnonKey || null,
     });
     return normalizeDailyChallengeStatus(status, challengeKey);
+  }
+
+  private normalizeRemoteRows(rows: ReadonlyArray<ScoreEntry>): ScoreEntry[] {
+    return rows
+      .filter((entry): entry is ScoreEntry => this.isScoreEntry(entry))
+      .map((entry) => ({
+        user: entry.user,
+        score: entry.score,
+        level: entry.level,
+        date: entry.date,
+        skillUsage: this.normalizeSkillUsage(entry.skillUsage),
+      }));
   }
 
   private isScoreEntry(entry: unknown): entry is ScoreEntry {
