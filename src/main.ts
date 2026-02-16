@@ -29,6 +29,7 @@ import { ThemeManager } from "./ui/theme";
 type ScoreboardView = "global" | "personal" | "daily";
 type NonDailyScoreboardView = "global" | "personal";
 type GameMode = "classic" | "daily";
+type KeyGuidePage = "basic" | "skills";
 
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) {
@@ -55,6 +56,7 @@ const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
 let keyCardVisible = true;
+let keyGuidePage: KeyGuidePage = "basic";
 let canResume = false;
 let savingGameOver = false;
 let refreshingScoreboard = false;
@@ -97,6 +99,7 @@ themeManager.apply(0);
 renderer.setStatus("Paused");
 renderer.renderScoreboard([]);
 renderSkillsList();
+syncKeyGuidePageUi();
 syncSkillRunnerUi(skillRunner.getState());
 setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
 syncGameModeUi();
@@ -173,6 +176,14 @@ function bindUiControls(): void {
 
   dom.toggleKeyBtn.addEventListener("click", () => {
     toggleKeyCard();
+  });
+
+  dom.keyPageBasicBtn.addEventListener("click", () => {
+    setKeyGuidePage("basic");
+  });
+
+  dom.keyPageSkillsBtn.addEventListener("click", () => {
+    setKeyGuidePage("skills");
   });
 
   dom.globalScoreBtn.addEventListener("click", () => {
@@ -656,9 +667,64 @@ function isFormTarget(target: EventTarget | null): boolean {
 }
 
 function toggleKeyCard(): void {
-  keyCardVisible = !keyCardVisible;
-  dom.keyCardEl.classList.toggle("hidden", !keyCardVisible);
-  dom.sideColumnEl.classList.toggle("key-hidden", !keyCardVisible);
+  if (!keyCardVisible) {
+    setKeyGuidePage("basic");
+    keyCardVisible = true;
+    dom.keyCardEl.classList.remove("hidden");
+    dom.sideColumnEl.classList.remove("key-hidden");
+    return;
+  }
+
+  if (keyGuidePage === "basic") {
+    setKeyGuidePage("skills");
+    return;
+  }
+
+  setKeyGuidePage("basic");
+  keyCardVisible = false;
+  dom.keyCardEl.classList.add("hidden");
+  dom.sideColumnEl.classList.add("key-hidden");
+}
+
+function setKeyGuidePage(page: KeyGuidePage): void {
+  if (keyGuidePage === page) {
+    return;
+  }
+  keyGuidePage = page;
+  syncKeyGuidePageUi();
+}
+
+function syncKeyGuidePageUi(): void {
+  const basicPage = keyGuidePage === "basic";
+  dom.keyPageBasicBtn.classList.toggle("active", basicPage);
+  dom.keyPageSkillsBtn.classList.toggle("active", !basicPage);
+  dom.keyPageBasicBtn.setAttribute("aria-pressed", basicPage ? "true" : "false");
+  dom.keyPageSkillsBtn.setAttribute("aria-pressed", basicPage ? "false" : "true");
+  dom.keyPageBasicEl.classList.toggle("hidden", !basicPage);
+  dom.keyPageSkillsEl.classList.toggle("hidden", basicPage);
+}
+
+function renderKeyGuideSkillsPage(): void {
+  if (skills.length === 0) {
+    dom.keySkillsListEl.innerHTML = [
+      '<p class="key-skills-empty">No skills yet.</p>',
+      '<p class="key-skills-empty">Create one in <code>Skills (6)</code>.</p>',
+    ].join("");
+    return;
+  }
+
+  dom.keySkillsListEl.innerHTML = skills
+    .map((skill) => {
+      const hotkey = skill.hotkey
+        ? `Key ${escapeHtml(skillHotkeyLabel(skill.hotkey))}`
+        : "No hotkey";
+      const sequence = escapeHtml(directionSequenceToLabel(skill.sequence));
+      return `<div class="key-skill-entry">
+        <p class="key-skill-top"><code>${hotkey}</code> · ${escapeHtml(skill.name)}</p>
+        <p class="key-skill-sequence">${sequence}</p>
+      </div>`;
+    })
+    .join("");
 }
 
 function bindGameOverModal(): void {
@@ -1178,6 +1244,7 @@ function resetSkillForm(keepMessage = false): void {
 }
 
 function renderSkillsList(): void {
+  renderKeyGuideSkillsPage();
   const shouldAnimateResize = isSkillsModalOpen();
   const previousHeight = shouldAnimateResize
     ? dom.skillsDialogEl.getBoundingClientRect().height
