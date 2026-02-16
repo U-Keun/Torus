@@ -24,7 +24,7 @@ import {
 } from "./skills/types";
 import { mountTorusLayout } from "./ui/layout";
 import { type GameStatus, TorusRenderer } from "./ui/renderer";
-import { ThemeManager } from "./ui/theme";
+import { ThemeManager, type CustomThemeDraft } from "./ui/theme";
 
 type ScoreboardView = "global" | "personal" | "daily";
 type NonDailyScoreboardView = "global" | "personal";
@@ -54,6 +54,8 @@ const DAILY_SCORE_TITLE = "DAILY CHALLENGE TOP 10";
 const DAILY_CHALLENGE_DIFFICULTY: Difficulty = 1;
 const KEY_PAGE_FADE_MS = 220;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
+const THEME_CUSTOM_FORM_IDLE_TEXT = "Adjust colors and click Apply or Save.";
+const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
 let keyCardVisible = true;
@@ -98,12 +100,17 @@ const skillRunner = new SkillRunner(dispatchMove, {
 game.setLastUser(loadLastUser());
 
 themeManager.apply(0);
+const savedCustomTheme = themeManager.loadSavedCustom();
+if (savedCustomTheme) {
+  themeManager.applyCustom(savedCustomTheme);
+}
 renderer.setStatus("Paused");
 renderer.renderScoreboard([]);
 renderSkillsList();
 syncKeyGuidePageUi({ animate: false });
 syncSkillRunnerUi(skillRunner.getState());
 setSkillFormMessage(SKILL_FORM_IDLE_TEXT);
+setThemeCustomMessage(THEME_CUSTOM_FORM_IDLE_TEXT);
 syncGameModeUi();
 if (gameMode === "daily") {
   void refreshDailyChallengeStatus();
@@ -122,6 +129,7 @@ bindUiControls();
 bindKeyboardControls();
 bindGameOverModal();
 bindSubmitConfirmModal();
+bindThemeCustomModal();
 bindSkillsModal();
 bindScoreDrawerInteractions();
 void maybeCheckForUpdatesOnLaunch();
@@ -166,6 +174,18 @@ function bindUiControls(): void {
 
   dom.themeBtn.addEventListener("click", () => {
     themeManager.cycle();
+  });
+
+  dom.themeChipEl.title = "Click to customize theme colors.";
+  dom.themeChipEl.addEventListener("click", () => {
+    toggleThemeCustomModal();
+  });
+  dom.themeChipEl.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter" && event.key !== " ") {
+      return;
+    }
+    toggleThemeCustomModal();
+    event.preventDefault();
   });
 
   dom.skillsBtn.addEventListener("click", () => {
@@ -284,6 +304,14 @@ function bindKeyboardControls(): void {
       return;
     }
 
+    if (isThemeCustomModalOpen()) {
+      if (event.key === "Escape") {
+        closeThemeCustomModal();
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (isSkillsModalOpen()) {
       if (event.key === "Escape" || (event.key === "6" && !isFormTarget(event.target))) {
         closeSkillsModal();
@@ -322,6 +350,7 @@ function bindKeyboardControls(): void {
 function startNewGame(): void {
   closeGameOverModal();
   closeSubmitConfirmModal();
+  closeThemeCustomModal();
   closeSkillsModal();
   collapseExpandedScoreRow();
   skillRunner.cancelAll();
@@ -355,6 +384,7 @@ function pauseGame(): void {
 function resetGame(): void {
   closeGameOverModal();
   closeSubmitConfirmModal();
+  closeThemeCustomModal();
   closeSkillsModal();
   collapseExpandedScoreRow();
   skillRunner.cancelAll();
@@ -816,6 +846,182 @@ function bindSubmitConfirmModal(): void {
   });
 }
 
+function bindThemeCustomModal(): void {
+  dom.themeCustomCloseBtn.addEventListener("click", () => {
+    closeThemeCustomModal();
+  });
+
+  dom.themeCustomModalEl.addEventListener("click", (event) => {
+    if (event.target === dom.themeCustomModalEl) {
+      closeThemeCustomModal();
+    }
+  });
+
+  dom.themeCustomFormEl.addEventListener("submit", (event) => {
+    event.preventDefault();
+    applyThemeFromForm({ persist: true });
+  });
+
+  dom.themeCustomApplyBtn.addEventListener("click", () => {
+    applyThemeFromForm({ persist: false });
+  });
+
+  dom.themeCustomResetBtn.addEventListener("click", () => {
+    themeManager.clearCustom();
+    const presetDraft = themeManager.getActiveDraft();
+    fillThemeForm(presetDraft);
+    setThemeCustomMessage("Custom theme removed. Reverted to current preset.", "good");
+  });
+
+  const inputs: HTMLInputElement[] = [
+    dom.themeColor0El,
+    dom.themeColor1El,
+    dom.themeColor2El,
+    dom.themeColor3El,
+    dom.themeColor4El,
+    dom.themeTextColorEl,
+    dom.themeGlazeColorEl,
+    dom.themeGlowColorEl,
+  ];
+  inputs.forEach((input) => {
+    input.addEventListener("input", () => {
+      if (dom.themeCustomMessageEl.classList.contains("warn")) {
+        setThemeCustomMessage(THEME_CUSTOM_FORM_IDLE_TEXT);
+      }
+      syncThemeSamplesFromForm();
+    });
+  });
+
+  dom.themeGlowAlphaEl.addEventListener("input", () => {
+    syncThemeGlowAlphaLabel();
+    if (dom.themeCustomMessageEl.classList.contains("warn")) {
+      setThemeCustomMessage(THEME_CUSTOM_FORM_IDLE_TEXT);
+    }
+    syncThemeSamplesFromForm();
+  });
+}
+
+function toggleThemeCustomModal(): void {
+  if (isThemeCustomModalOpen()) {
+    closeThemeCustomModal();
+    return;
+  }
+  openThemeCustomModal();
+}
+
+function openThemeCustomModal(): void {
+  if (pendingGameOverPayload || isSubmitConfirmModalOpen()) {
+    return;
+  }
+  closeSkillsModal();
+  fillThemeForm(themeManager.getActiveDraft());
+  setThemeCustomMessage(THEME_CUSTOM_FORM_IDLE_TEXT);
+  dom.themeCustomModalEl.classList.remove("hidden");
+  dom.themeColor0El.focus();
+}
+
+function closeThemeCustomModal(): void {
+  dom.themeCustomModalEl.classList.add("hidden");
+}
+
+function isThemeCustomModalOpen(): boolean {
+  return !dom.themeCustomModalEl.classList.contains("hidden");
+}
+
+function fillThemeForm(draft: CustomThemeDraft): void {
+  dom.themeColor0El.value = draft.colors[0];
+  dom.themeColor1El.value = draft.colors[1];
+  dom.themeColor2El.value = draft.colors[2];
+  dom.themeColor3El.value = draft.colors[3];
+  dom.themeColor4El.value = draft.colors[4];
+  dom.themeTextColorEl.value = draft.text;
+  dom.themeGlazeColorEl.value = draft.glaze;
+  dom.themeGlowColorEl.value = draft.glowColor;
+  dom.themeGlowAlphaEl.value = String(Math.round(clamp01(draft.glowAlpha) * 100));
+  syncThemeGlowAlphaLabel();
+  renderThemeSamples(draft);
+}
+
+function applyThemeFromForm(
+  options: { persist: boolean },
+): void {
+  const draft = readThemeDraftFromForm();
+  if (!draft) {
+    return;
+  }
+
+  if (options.persist) {
+    themeManager.saveCustom(draft);
+    setThemeCustomMessage("Custom theme saved.", "good");
+    return;
+  }
+
+  themeManager.applyCustom(draft);
+  setThemeCustomMessage("Preview applied. Save to keep this theme.");
+}
+
+function syncThemeSamplesFromForm(): void {
+  const draft = readThemeDraftFromForm({ silent: true });
+  if (!draft) {
+    return;
+  }
+  renderThemeSamples(draft);
+}
+
+function readThemeDraftFromForm(
+  options: { silent?: boolean } = {},
+): CustomThemeDraft | null {
+  const color0 = normalizeHexColorInput(dom.themeColor0El.value);
+  const color1 = normalizeHexColorInput(dom.themeColor1El.value);
+  const color2 = normalizeHexColorInput(dom.themeColor2El.value);
+  const color3 = normalizeHexColorInput(dom.themeColor3El.value);
+  const color4 = normalizeHexColorInput(dom.themeColor4El.value);
+  const text = normalizeHexColorInput(dom.themeTextColorEl.value);
+  const glaze = normalizeHexColorInput(dom.themeGlazeColorEl.value);
+  const glowColor = normalizeHexColorInput(dom.themeGlowColorEl.value);
+
+  if (!color0 || !color1 || !color2 || !color3 || !color4 || !text || !glaze || !glowColor) {
+    if (!options.silent) {
+      setThemeCustomMessage("Invalid color value. Please use HEX color fields.", "warn");
+    }
+    return null;
+  }
+
+  const glowAlphaRaw = Number(dom.themeGlowAlphaEl.value);
+  const glowAlpha = clamp01(Number.isFinite(glowAlphaRaw) ? glowAlphaRaw / 100 : 0);
+
+  return {
+    colors: [color0, color1, color2, color3, color4],
+    text,
+    glaze,
+    glowColor,
+    glowAlpha,
+  };
+}
+
+function syncThemeGlowAlphaLabel(): void {
+  const percentRaw = Number(dom.themeGlowAlphaEl.value);
+  const percent = Number.isFinite(percentRaw)
+    ? Math.min(100, Math.max(0, Math.round(percentRaw)))
+    : 0;
+  dom.themeGlowAlphaValueEl.textContent = `${percent}%`;
+}
+
+function renderThemeSamples(draft: CustomThemeDraft): void {
+  const [r, g, b] = hexToRgb(draft.glowColor);
+  const glowAlpha = clamp01(draft.glowAlpha);
+  const glow = `rgba(${r}, ${g}, ${b}, ${toAlphaString(glowAlpha)})`;
+
+  dom.themeCustomFormEl.style.setProperty("--torus-0", draft.colors[0]);
+  dom.themeCustomFormEl.style.setProperty("--torus-1", draft.colors[1]);
+  dom.themeCustomFormEl.style.setProperty("--torus-2", draft.colors[2]);
+  dom.themeCustomFormEl.style.setProperty("--torus-3", draft.colors[3]);
+  dom.themeCustomFormEl.style.setProperty("--torus-4", draft.colors[4]);
+  dom.themeCustomFormEl.style.setProperty("--torus-text", draft.text);
+  dom.themeCustomFormEl.style.setProperty("--torus-glaze", draft.glaze);
+  dom.themeCustomFormEl.style.setProperty("--torus-glow", glow);
+}
+
 function bindScoreDrawerInteractions(): void {
   dom.scoreListEl.addEventListener("click", (event) => {
     const target = event.target;
@@ -964,6 +1170,7 @@ function openSkillsModal(): void {
   if (pendingGameOverPayload || isSubmitConfirmModalOpen()) {
     return;
   }
+  closeThemeCustomModal();
   dom.skillsModalEl.classList.remove("hidden");
   dom.skillNameEl.focus();
 }
@@ -1385,8 +1592,25 @@ function setSkillFormMessage(
   }
 }
 
+function setThemeCustomMessage(
+  message: string,
+  tone: "info" | "good" | "warn" = "info",
+): void {
+  dom.themeCustomMessageEl.textContent = message;
+  dom.themeCustomMessageEl.className = "theme-custom-message";
+  if (tone === "good") {
+    dom.themeCustomMessageEl.classList.add("good");
+    return;
+  }
+  if (tone === "warn") {
+    dom.themeCustomMessageEl.classList.add("warn");
+  }
+}
+
 function openGameOverModal(payload: GameOverPayload): void {
   closeSubmitConfirmModal();
+  closeThemeCustomModal();
+  closeSkillsModal();
   const lastUser = game.getLastUser().trim();
   savingGameOver = false;
   dom.gameOverSaveBtn.disabled = false;
@@ -1575,6 +1799,7 @@ async function openSubmitConfirmModal(): Promise<void> {
   if (isSubmitConfirmModalOpen() || preparingPersonalSubmit || submittingPersonalBest) {
     return;
   }
+  closeThemeCustomModal();
   closeSkillsModal();
   collapseExpandedScoreRow();
 
@@ -1748,6 +1973,40 @@ function escapeHtml(value: string): string {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function normalizeHexColorInput(value: string): string | null {
+  const candidate = value.trim();
+  if (!HEX_COLOR_PATTERN.test(candidate)) {
+    return null;
+  }
+  return candidate.toLowerCase();
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 1) {
+    return 1;
+  }
+  return value;
+}
+
+function hexToRgb(color: string): [number, number, number] {
+  const safeColor = normalizeHexColorInput(color) ?? "#ffffff";
+  const hex = safeColor.slice(1);
+  const r = Number.parseInt(hex.slice(0, 2), 16);
+  const g = Number.parseInt(hex.slice(2, 4), 16);
+  const b = Number.parseInt(hex.slice(4, 6), 16);
+  return [r, g, b];
+}
+
+function toAlphaString(value: number): string {
+  return (Math.round(clamp01(value) * 1000) / 1000).toString();
 }
 
 function normalizeSkillUsage(raw: unknown): SkillUsageEntry[] {

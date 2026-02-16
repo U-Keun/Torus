@@ -24,6 +24,7 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
   - `2`: Half-glazed + Rotate
   - `3`: Half-glazed + Flip
 - Theme switching and compact single-screen desktop layout.
+- Custom theme editor (click theme chip): adjust torus/text/glaze/glow colors, preview, and save locally.
 - Custom one-shot `Skills` (create/run/edit/delete directional sequences, including edge-aware dynamic pair `(`/`)`).
 - `GLOBAL TOP 10`, `DAILY CHALLENGE TOP 10`, and `PERSONAL TOP 10` scoreboard views.
 - Own records are marked with `Me` tag in `GLOBAL` and `DAILY`.
@@ -42,6 +43,7 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
 - Pause: `3`
 - Reset: `4`
 - Theme: `5`
+- Theme custom editor: click the `Theme: ...` chip at top-right (`Apply` for preview, `Save` for persistence)
 - Skills: `6`
 - Toggle scoreboard: `7`
 - Key card cycle: `8` (`Page 1 -> Page 2 -> Hide -> Page 1`)

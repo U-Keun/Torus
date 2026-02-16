@@ -31,6 +31,24 @@ export interface TorusDom {
   submitConfirmConfirmBtn: HTMLButtonElement;
   submitConfirmCancelBtn: HTMLButtonElement;
   themeChipEl: HTMLDivElement;
+  themeCustomModalEl: HTMLDivElement;
+  themeCustomDialogEl: HTMLDivElement;
+  themeCustomCloseBtn: HTMLButtonElement;
+  themeCustomFormEl: HTMLFormElement;
+  themeColor0El: HTMLInputElement;
+  themeColor1El: HTMLInputElement;
+  themeColor2El: HTMLInputElement;
+  themeColor3El: HTMLInputElement;
+  themeColor4El: HTMLInputElement;
+  themeTextColorEl: HTMLInputElement;
+  themeGlazeColorEl: HTMLInputElement;
+  themeGlowColorEl: HTMLInputElement;
+  themeGlowAlphaEl: HTMLInputElement;
+  themeGlowAlphaValueEl: HTMLSpanElement;
+  themeCustomApplyBtn: HTMLButtonElement;
+  themeCustomSaveBtn: HTMLButtonElement;
+  themeCustomResetBtn: HTMLButtonElement;
+  themeCustomMessageEl: HTMLParagraphElement;
   newBtn: HTMLButtonElement;
   resumeBtn: HTMLButtonElement;
   pauseBtn: HTMLButtonElement;
@@ -70,7 +88,7 @@ const APP_TEMPLATE = `
       <div class="hero-copy">
         <h1>Torus</h1>
       </div>
-      <div class="theme-chip" id="theme-chip">Theme: -</div>
+      <div class="theme-chip interactive-chip" id="theme-chip" role="button" tabindex="0" aria-label="Open theme customizer">Theme: -</div>
     </header>
 
     <section class="hud fade-in-delayed">
@@ -179,6 +197,7 @@ const APP_TEMPLATE = `
               <p><code>3</code>: Pause</p>
               <p><code>4</code>: Reset</p>
               <p><code>5</code>: Theme</p>
+              <p><code>Theme chip</code>: Open theme custom editor</p>
               <p><code>6</code>: Skills</p>
               <p><code>7</code>: Toggle scoreboard</p>
               <p><code>8</code>: Key page (<code>1 → 2 → hide</code>)</p>
@@ -218,6 +237,80 @@ const APP_TEMPLATE = `
           <button id="submit-confirm-cancel" type="button">Cancel</button>
           <button id="submit-confirm-ok" type="button" disabled>Submit</button>
         </div>
+      </div>
+    </div>
+
+    <div id="theme-custom-modal" class="gameover-modal hidden" role="dialog" aria-modal="true" aria-labelledby="theme-custom-title">
+      <div id="theme-custom-dialog" class="gameover-dialog theme-custom-dialog">
+        <div class="theme-custom-top">
+          <h2 id="theme-custom-title">Theme Custom</h2>
+          <button id="theme-custom-close" class="mini-btn" type="button">Close</button>
+        </div>
+        <p class="theme-custom-help">
+          Edit your color palette, preview with <code>Apply</code>, and keep it with <code>Save</code>.
+        </p>
+        <form id="theme-custom-form" class="theme-custom-form">
+          <div class="theme-torus-row">
+            <label class="theme-color-field" for="theme-color-0">
+              <span>Torus 0</span>
+              <input id="theme-color-0" type="color" />
+            </label>
+            <label class="theme-color-field" for="theme-color-1">
+              <span>Torus 1</span>
+              <input id="theme-color-1" type="color" />
+            </label>
+            <label class="theme-color-field" for="theme-color-2">
+              <span>Torus 2</span>
+              <input id="theme-color-2" type="color" />
+            </label>
+            <label class="theme-color-field" for="theme-color-3">
+              <span>Torus 3</span>
+              <input id="theme-color-3" type="color" />
+            </label>
+            <label class="theme-color-field" for="theme-color-4">
+              <span>Torus 4</span>
+              <input id="theme-color-4" type="color" />
+            </label>
+          </div>
+
+          <div class="theme-torus-sample" aria-hidden="true">
+            <span class="theme-torus-sample-token c0">@@@</span>
+            <span class="theme-torus-sample-token c1">@@@</span>
+            <span class="theme-torus-sample-token c2">@@@</span>
+            <span class="theme-torus-sample-token c3">@@@</span>
+            <span class="theme-torus-sample-token c4">@@@</span>
+          </div>
+
+          <div class="theme-accent-row">
+            <label class="theme-color-field" for="theme-text-color">
+              <span>Text</span>
+              <input id="theme-text-color" type="color" />
+            </label>
+            <label class="theme-color-field" for="theme-glaze-color">
+              <span>Glaze</span>
+              <input id="theme-glaze-color" type="color" />
+            </label>
+            <label class="theme-color-field" for="theme-glow-color">
+              <span>Glow</span>
+              <input id="theme-glow-color" type="color" />
+            </label>
+          </div>
+
+          <label class="theme-range-field" for="theme-glow-alpha">
+            <span>Glow Alpha</span>
+            <div class="theme-range-wrap">
+              <input id="theme-glow-alpha" type="range" min="0" max="100" step="1" />
+              <span id="theme-glow-alpha-value">0%</span>
+            </div>
+          </label>
+
+          <div class="theme-custom-actions">
+            <button id="theme-custom-apply" type="button">Apply</button>
+            <button id="theme-custom-save" type="submit">Save</button>
+            <button id="theme-custom-reset" type="button">Reset</button>
+          </div>
+        </form>
+        <p id="theme-custom-message" class="theme-custom-message"></p>
       </div>
     </div>
 
@@ -286,6 +379,24 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     submitConfirmConfirmBtn: must<HTMLButtonElement>(container, "#submit-confirm-ok"),
     submitConfirmCancelBtn: must<HTMLButtonElement>(container, "#submit-confirm-cancel"),
     themeChipEl: must<HTMLDivElement>(container, "#theme-chip"),
+    themeCustomModalEl: must<HTMLDivElement>(container, "#theme-custom-modal"),
+    themeCustomDialogEl: must<HTMLDivElement>(container, "#theme-custom-dialog"),
+    themeCustomCloseBtn: must<HTMLButtonElement>(container, "#theme-custom-close"),
+    themeCustomFormEl: must<HTMLFormElement>(container, "#theme-custom-form"),
+    themeColor0El: must<HTMLInputElement>(container, "#theme-color-0"),
+    themeColor1El: must<HTMLInputElement>(container, "#theme-color-1"),
+    themeColor2El: must<HTMLInputElement>(container, "#theme-color-2"),
+    themeColor3El: must<HTMLInputElement>(container, "#theme-color-3"),
+    themeColor4El: must<HTMLInputElement>(container, "#theme-color-4"),
+    themeTextColorEl: must<HTMLInputElement>(container, "#theme-text-color"),
+    themeGlazeColorEl: must<HTMLInputElement>(container, "#theme-glaze-color"),
+    themeGlowColorEl: must<HTMLInputElement>(container, "#theme-glow-color"),
+    themeGlowAlphaEl: must<HTMLInputElement>(container, "#theme-glow-alpha"),
+    themeGlowAlphaValueEl: must<HTMLSpanElement>(container, "#theme-glow-alpha-value"),
+    themeCustomApplyBtn: must<HTMLButtonElement>(container, "#theme-custom-apply"),
+    themeCustomSaveBtn: must<HTMLButtonElement>(container, "#theme-custom-save"),
+    themeCustomResetBtn: must<HTMLButtonElement>(container, "#theme-custom-reset"),
+    themeCustomMessageEl: must<HTMLParagraphElement>(container, "#theme-custom-message"),
     newBtn: must<HTMLButtonElement>(container, "#new-game"),
     resumeBtn: must<HTMLButtonElement>(container, "#resume-game"),
     pauseBtn: must<HTMLButtonElement>(container, "#pause-game"),
