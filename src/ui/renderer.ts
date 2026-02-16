@@ -67,11 +67,24 @@ export class TorusRenderer {
         const drawerBody = row.skillUsage.length === 0
           ? '<li class="empty">No skill information recorded.</li>'
           : row.skillUsage
-            .map((usage) => {
+            .map((usage, skillIndex) => {
               const command = usage.command ? usage.command : "-";
+              const canImport = Boolean(usage.command && usage.command.trim().length > 0);
+              const importDisabledAttr = canImport ? "" : "disabled";
+              const importLabel = canImport ? "Import" : "No Command";
               return `<li>
                 <div class="score-drawer-item-name">${escapeHtml(usage.name)}</div>
                 <div class="score-drawer-item-command">${escapeHtml(command)}</div>
+                <div class="score-drawer-item-actions">
+                  <button
+                    type="button"
+                    class="mini-btn score-drawer-import-btn"
+                    data-action="import-skill"
+                    data-score-index="${index}"
+                    data-skill-index="${skillIndex}"
+                    ${importDisabledAttr}
+                  >${importLabel}</button>
+                </div>
               </li>`;
             })
             .join("");
