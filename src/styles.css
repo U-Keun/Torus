@@ -322,6 +322,43 @@ code {
   transition: width var(--motion-3xl) var(--ease-emphasized);
 }
 
+.daily-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  min-width: 88px;
+  border-radius: 9px;
+  border: 1px solid rgba(246, 206, 120, 0.5);
+  background: rgba(38, 24, 6, 0.66);
+  color: #ffe0a8;
+  font-size: clamp(0.68rem, 0.92vh, 0.78rem);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  user-select: none;
+  cursor: help;
+  box-shadow: inset 0 0 14px rgba(247, 192, 94, 0.18);
+}
+
+.daily-badge.hidden {
+  display: none;
+}
+
+.daily-badge.icon-badge {
+  --daily-badge-icon-size: 18px;
+  min-width: 0;
+  width: calc(var(--daily-badge-icon-size) + 6px);
+  height: calc(var(--daily-badge-icon-size) + 6px);
+  padding: 3px;
+  line-height: 0;
+}
+
+.daily-badge-icon {
+  width: var(--daily-badge-icon-size, 18px);
+  height: var(--daily-badge-icon-size, 18px);
+  display: block;
+}
+
 select,
 button {
   border: 1px solid var(--border);
@@ -787,6 +824,124 @@ button:active {
   line-height: 1.2;
   text-transform: uppercase;
   flex: 0 0 auto;
+}
+
+.score-rank-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  position: relative;
+  width: 20px;
+  height: 18px;
+  padding: 1px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.32);
+  background: linear-gradient(165deg, rgba(24, 55, 84, 0.78), rgba(10, 28, 45, 0.62));
+  overflow: hidden;
+  cursor: help;
+  flex: 0 0 auto;
+  box-shadow:
+    inset 0 0 8px rgba(255, 255, 255, 0.08),
+    0 0 8px rgba(157, 225, 255, 0.12);
+}
+
+.score-rank-badge::after {
+  content: "";
+  position: absolute;
+  inset: -40% -70%;
+  background: linear-gradient(
+    120deg,
+    transparent 34%,
+    rgba(255, 255, 255, 0.62) 50%,
+    transparent 66%
+  );
+  transform: translateX(-120%) rotate(16deg);
+  animation: rank-badge-glint 2.8s ease-in-out infinite;
+  pointer-events: none;
+  opacity: 0.45;
+}
+
+.score-rank-badge.rank-1 {
+  color: #ffd46d;
+  border-color: rgba(255, 212, 109, 0.62);
+  background: linear-gradient(165deg, rgba(124, 87, 21, 0.82), rgba(63, 48, 17, 0.66));
+  box-shadow:
+    inset 0 0 8px rgba(255, 246, 201, 0.2),
+    0 0 10px rgba(255, 212, 109, 0.28);
+}
+
+.score-rank-badge.rank-2 {
+  color: #d7e6f2;
+  border-color: rgba(215, 230, 242, 0.58);
+  background: linear-gradient(165deg, rgba(86, 110, 133, 0.8), rgba(36, 50, 66, 0.66));
+  box-shadow:
+    inset 0 0 8px rgba(239, 247, 255, 0.15),
+    0 0 9px rgba(215, 230, 242, 0.2);
+}
+
+.score-rank-badge.rank-3 {
+  color: #f1ba8d;
+  border-color: rgba(241, 186, 141, 0.58);
+  background: linear-gradient(165deg, rgba(116, 67, 41, 0.82), rgba(61, 37, 23, 0.66));
+  box-shadow:
+    inset 0 0 8px rgba(255, 225, 197, 0.12),
+    0 0 9px rgba(241, 186, 141, 0.2);
+}
+
+.score-rank-badge.rank-2::after {
+  animation-delay: 0.35s;
+}
+
+.score-rank-badge.rank-3::after {
+  animation-delay: 0.7s;
+}
+
+.score-rank-icon {
+  width: 12px;
+  height: 12px;
+  display: block;
+  filter: drop-shadow(0 0 3px currentColor);
+}
+
+@keyframes rank-badge-glint {
+  0% {
+    transform: translateX(-120%) rotate(16deg);
+    opacity: 0;
+  }
+  22% {
+    opacity: 0.5;
+  }
+  50% {
+    transform: translateX(135%) rotate(16deg);
+    opacity: 0;
+  }
+  100% {
+    transform: translateX(135%) rotate(16deg);
+    opacity: 0;
+  }
+}
+
+.score-me-badge {
+  --daily-badge-icon-size: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 18px;
+  padding: 1px 4px;
+  border-radius: 999px;
+  border: 1px solid rgba(246, 206, 120, 0.5);
+  background: rgba(38, 24, 6, 0.66);
+  color: #ffe0a8;
+  box-shadow: inset 0 0 8px rgba(247, 192, 94, 0.18);
+  cursor: help;
+  flex: 0 0 auto;
+}
+
+.score-me-badge-text {
+  font-size: 0.58rem;
+  line-height: 1;
+  letter-spacing: 0.02em;
 }
 
 .score-list .point {

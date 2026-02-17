@@ -5,6 +5,7 @@ import { check, type Update } from "@tauri-apps/plugin-updater";
 import { type Difficulty, type GameOverPayload, type GameSnapshot, TorusGame } from "./game";
 import {
   createScoreboardStore,
+  type DailyBadgeStatus,
   type DailyChallengeSubmitResult,
   type DailyChallengeStatus,
   type ScoreEntry,
@@ -56,6 +57,12 @@ const KEY_PAGE_FADE_MS = 220;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 const THEME_CUSTOM_FORM_IDLE_TEXT = "Adjust colors and click Apply or Save.";
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+const DAILY_BADGE_ICON_PREFIX = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="daily-badge-icon" aria-hidden="true" focusable="false"><text x="3.1" y="5.9" font-size="4.6" font-weight="400" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial" fill="none" stroke="currentColor" stroke-width="0.55" paint-order="stroke" stroke-linecap="round" stroke-linejoin="round">`;
+const DAILY_BADGE_ICON_SUFFIX = `</text><path d="M14 9.536V7a4 4 0 0 1 4-4h1.5a.5.5 0 0 1 .5.5V5a4 4 0 0 1-4 4 4 4 0 0 0-4 4c0 2 1 3 1 5a5 5 0 0 1-1 3"/><path d="M4 9a5 5 0 0 1 8 4 5 5 0 0 1-8-4"/><path d="M5 21h14"/></svg>`;
+const DAILY_BADGE_SHRUB_ICON_PREFIX = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="daily-badge-icon" aria-hidden="true" focusable="false"><text x="3.1" y="5.9" font-size="4.6" font-weight="400" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial" fill="none" stroke="currentColor" stroke-width="0.55" paint-order="stroke" stroke-linecap="round" stroke-linejoin="round">`;
+const DAILY_BADGE_SHRUB_ICON_SUFFIX = `</text><path d="M12 22v-5.172a2 2 0 0 0-.586-1.414L9.5 13.5"/><path d="M14.5 14.5 12 17"/><path d="M17 8.8A6 6 0 0 1 13.8 20H10A6.5 6.5 0 0 1 7 8a5 5 0 0 1 10 0z"/></svg>`;
+const DAILY_BADGE_TREES_ICON_PREFIX = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="daily-badge-icon" aria-hidden="true" focusable="false"><text x="3.1" y="5.9" font-size="4.6" font-weight="400" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial" fill="none" stroke="currentColor" stroke-width="0.55" paint-order="stroke" stroke-linecap="round" stroke-linejoin="round">`;
+const DAILY_BADGE_TREES_ICON_SUFFIX = `</text><path d="M10 10v.2A3 3 0 0 1 8.9 16H5a3 3 0 0 1-1-5.8V10a3 3 0 0 1 6 0Z"/><path d="M7 16v6"/><path d="M13 19v3"/><path d="M12 19h8.3a1 1 0 0 0 .7-1.7L18 14h.3a1 1 0 0 0 .7-1.7L16 9h.2a1 1 0 0 0 .8-1.7L13 3l-1.4 1.5"/></svg>`;
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
 let keyCardVisible = true;
@@ -83,6 +90,7 @@ let modeButtonResizeTimer: number | null = null;
 let challengeInfoResizeTimer: number | null = null;
 let keyPageFadeTimer: number | null = null;
 let dailyChallengeStatus: DailyChallengeStatus | null = null;
+let dailyBadgeStatus: DailyBadgeStatus | null = null;
 let startingDailyChallenge = false;
 const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
 
@@ -115,6 +123,7 @@ syncGameModeUi();
 if (gameMode === "daily") {
   void refreshDailyChallengeStatus();
 }
+void refreshDailyBadgeStatus();
 syncScoreboardViewUi();
 void refreshScoreboard();
 if (gameMode === "daily") {
@@ -466,6 +475,20 @@ async function refreshDailyChallengeStatus(
   }
 }
 
+async function refreshDailyBadgeStatus(
+  challengeKey: string = getCurrentDailyChallenge().key,
+): Promise<DailyBadgeStatus | null> {
+  try {
+    const status = await scoreboardStore.getDailyBadgeStatus(challengeKey);
+    setDailyBadgeStatus(status);
+    return status;
+  } catch (error) {
+    console.warn("Failed to load daily badge status.", error);
+    setDailyBadgeStatus(null);
+    return null;
+  }
+}
+
 async function toggleGameMode(): Promise<void> {
   gameMode = gameMode === "daily" ? "classic" : "daily";
   saveGameModePreference(gameMode);
@@ -478,6 +501,7 @@ async function toggleGameMode(): Promise<void> {
   syncGameModeUi({ animateModeButton: true, animateChallengeInfo: true });
   if (gameMode === "daily") {
     void refreshDailyChallengeStatus();
+    void refreshDailyBadgeStatus();
   } else {
     dailyChallengeStatus = null;
   }
@@ -505,6 +529,7 @@ function syncGameModeUi(
   if (dailyMode) {
     dom.difficultyEl.value = String(challenge.difficulty);
   }
+  syncDailyBadgeUi();
 }
 
 function formatDailyChallengeInfo(challenge: DailyChallengeSpec): string {
@@ -515,6 +540,137 @@ function formatDailyChallengeInfo(challenge: DailyChallengeSpec): string {
     `Daily Challenge (UTC): ${challenge.key} · ${dailyChallengeStatus.attemptsLeft}/` +
     `${dailyChallengeStatus.maxAttempts} attempts left`
   );
+}
+
+function setDailyBadgeStatus(status: DailyBadgeStatus | null): void {
+  dailyBadgeStatus = status;
+  syncDailyBadgeUi();
+  if (scoreboardView === "global" || scoreboardView === "daily") {
+    renderDisplayedScoreboard();
+  }
+}
+
+function syncDailyBadgeUi(): void {
+  const badge = dom.dailyBadgeEl;
+  if (gameMode !== "daily") {
+    badge.classList.add("hidden");
+    badge.classList.remove("icon-badge");
+    badge.innerHTML = "";
+    badge.textContent = "";
+    badge.title = "";
+    return;
+  }
+
+  if (!dailyBadgeStatus || dailyBadgeStatus.highestBadgePower === null) {
+    badge.classList.remove("hidden");
+    badge.classList.remove("icon-badge");
+    badge.innerHTML = "";
+    badge.textContent = "Badge: -";
+    badge.title = [
+      "No badge earned yet.",
+      "Daily badges are granted for consecutive successful Daily submissions (UTC).",
+      "Thresholds: 1, 2, 4, 8, ..., 512 days.",
+      `Current streak: ${formatDaysCount(dailyBadgeStatus?.currentStreak ?? 0)}.`,
+    ].join("\n");
+    badge.setAttribute("aria-label", "No daily streak badge earned yet");
+    return;
+  }
+
+  const power = dailyBadgeStatus.highestBadgePower;
+  const badgeDays = dailyBadgeStatus.highestBadgeDays ?? 2 ** power;
+  badge.classList.remove("hidden");
+  const iconMarkup = resolveDailyBadgeIcon(power);
+  if (iconMarkup) {
+    badge.classList.add("icon-badge");
+    badge.innerHTML = iconMarkup;
+  } else {
+    badge.classList.remove("icon-badge");
+    badge.innerHTML = "";
+    badge.textContent = `Badge 2^${power}`;
+  }
+  badge.title = formatDailyBadgeTooltip(dailyBadgeStatus, power, badgeDays);
+  badge.setAttribute(
+    "aria-label",
+    `Daily streak badge 2 to the power of ${power}, ${badgeDays} day tier`,
+  );
+}
+
+function formatDailyBadgeTooltip(
+  status: DailyBadgeStatus,
+  power: number,
+  badgeDays: number,
+): string {
+  const lines = [
+    `Highest badge: 2^${power} (${formatDaysCount(badgeDays)} tier).`,
+    `Current streak: ${formatDaysCount(status.currentStreak)}.`,
+    `Best streak: ${formatDaysCount(status.maxStreak)}.`,
+  ];
+  if (status.nextBadgePower !== null && status.nextBadgeDays !== null) {
+    lines.push(
+      `Next badge: 2^${status.nextBadgePower} (${formatDaysCount(status.nextBadgeDays)} tier), `
+      + `${formatDaysCount(status.daysToNextBadge ?? 0)} left.`,
+    );
+  } else {
+    lines.push("Top tier reached: 2^9 (512 days).");
+  }
+  lines.push("Rule: only successful Daily submissions count (strict consecutive days, UTC).");
+  return lines.join("\n");
+}
+
+function formatDailyBadgeTooltipInline(
+  status: DailyBadgeStatus,
+  power: number,
+  badgeDays: number,
+): string {
+  const parts = [
+    `Highest badge: 2^${power} (${formatDaysCount(badgeDays)} tier)`,
+    `Current streak: ${formatDaysCount(status.currentStreak)}`,
+    `Best streak: ${formatDaysCount(status.maxStreak)}`,
+  ];
+  if (status.nextBadgePower !== null && status.nextBadgeDays !== null) {
+    parts.push(
+      `Next: 2^${status.nextBadgePower} (${formatDaysCount(status.nextBadgeDays)} tier), `
+      + `${formatDaysCount(status.daysToNextBadge ?? 0)} left`,
+    );
+  } else {
+    parts.push("Top tier reached: 2^9 (512 days)");
+  }
+  parts.push("Rule: successful Daily submissions only, strict consecutive UTC days");
+  return parts.join(" | ");
+}
+
+function formatDaysCount(value: number): string {
+  return `${value} day${value === 1 ? "" : "s"}`;
+}
+
+function resolveDailyBadgeIcon(power: number): string | null {
+  if (power >= 0 && power <= 2) {
+    return `${DAILY_BADGE_ICON_PREFIX}${power}${DAILY_BADGE_ICON_SUFFIX}`;
+  }
+  if (power >= 4 && power <= 6) {
+    return `${DAILY_BADGE_SHRUB_ICON_PREFIX}${power}${DAILY_BADGE_SHRUB_ICON_SUFFIX}`;
+  }
+  if (power >= 7 && power <= 9) {
+    return `${DAILY_BADGE_TREES_ICON_PREFIX}${power}${DAILY_BADGE_TREES_ICON_SUFFIX}`;
+  }
+  return null;
+}
+
+function getScoreboardMeBadge(): { label: string; title: string; iconMarkup?: string } | undefined {
+  if (scoreboardView !== "global" && scoreboardView !== "daily") {
+    return undefined;
+  }
+  if (!dailyBadgeStatus || dailyBadgeStatus.highestBadgePower === null) {
+    return undefined;
+  }
+  const power = dailyBadgeStatus.highestBadgePower;
+  const badgeDays = dailyBadgeStatus.highestBadgeDays ?? 2 ** power;
+  const iconMarkup = resolveDailyBadgeIcon(power) ?? undefined;
+  return {
+    label: `2^${power}`,
+    title: formatDailyBadgeTooltipInline(dailyBadgeStatus, power, badgeDays),
+    iconMarkup,
+  };
 }
 
 function setModeButtonLabel(label: string, animate: boolean): void {
@@ -1210,6 +1366,8 @@ function renderDisplayedScoreboard(): void {
   renderer.renderScoreboard(displayedScoreboardEntries, {
     allowSkillImport: scoreboardView !== "personal",
     showMeTag: scoreboardView === "global" || scoreboardView === "daily",
+    showGlobalRankBadge: scoreboardView === "global",
+    meBadge: getScoreboardMeBadge(),
   });
   syncScoreRowAccessibility();
   applyExpandedScoreRowState();
@@ -1691,6 +1849,7 @@ async function saveGameOverScore(): Promise<void> {
       const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
       const dailyResult = await scoreboardStore.addDaily(challengeKey, entry);
       setDailyChallengeStatus(toDailyChallengeStatus(dailyResult));
+      await refreshDailyBadgeStatus(dailyResult.challengeKey);
       if (!dailyResult.accepted) {
         throw new Error(
           `Daily Challenge limit reached (${dailyResult.attemptsUsed}/${dailyResult.maxAttempts}).`,

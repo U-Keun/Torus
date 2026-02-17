@@ -1,7 +1,7 @@
 # Torus (Tauri Desktop)
 
 <p align="center">
-  <img width="600" height="400" alt="스크린샷 2026-02-16 오후 12 26 44_fit_1440x900" src="https://github.com/user-attachments/assets/b518dd28-ac2a-48ba-b767-9091313ec0da" />
+  <img width="900" alt="Torus v1.5 Daily Challenge and badge UI" src="./docs/images/torus-v1.5-daily-badges.png" />
 </p>
 
 Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus` game from the [newbiemacs project](https://github.com/jangsookim/newbiemacs).
@@ -24,10 +24,13 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
   - `2`: Half-glazed + Rotate
   - `3`: Half-glazed + Flip
 - Theme switching and compact single-screen desktop layout.
-- Custom theme editor (click theme chip): adjust torus/text/glaze/glow colors, preview, and save locally.
+- Custom theme editor (click theme chip): adjust torus/text/glaze/glow colors, sample, and save locally.
 - Custom one-shot `Skills` (create/run/edit/delete directional sequences, including edge-aware dynamic pair `(`/`)`).
 - `GLOBAL TOP 10`, `DAILY CHALLENGE TOP 10`, and `PERSONAL TOP 10` scoreboard views.
 - Own records are marked with `Me` tag in `GLOBAL` and `DAILY`.
+- Daily streak badge system (`2^0` to `2^9`) based on successful consecutive Daily submissions (UTC, strict reset).
+- Badge tooltip on hover (current streak, best streak, next badge progress).
+- `GLOBAL` Top 3 trophy badges (`#1`, `#2`, `#3`) with animated highlight.
 - Click a score row to slide open used skill details (skill name + command).
 - Import skills from expanded `GLOBAL`/`DAILY` records directly into personal skill set.
 - `Keys` card supports two pages: basic controls and current personal skill hotkeys/sequences.
@@ -44,6 +47,7 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
 - Reset: `4`
 - Theme: `5`
 - Theme custom editor: click the `Theme: ...` chip at top-right (`Apply` for preview, `Save` for persistence)
+- Hover badge icon: show streak/rank details
 - Skills: `6`
 - Toggle scoreboard: `7`
 - Key card cycle: `8` (`Page 1 -> Page 2 -> Hide -> Page 1`)
@@ -135,6 +139,7 @@ Default fetch size is top 10.
   - Server RPC enforces maximum 3 attempts per UTC day.
   - `attempts_used` increments even when score does not improve.
   - When daily best improves, that run is also auto-submitted to classic Global (same best-upsert rule).
+  - Daily streak badges are computed from successful Daily submissions (strict consecutive UTC days).
 
 This prevents duplicate classic entries and makes daily attempt limits tamper-resistant.
 

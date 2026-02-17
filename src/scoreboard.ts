@@ -34,6 +34,16 @@ export interface DailyChallengeSubmitResult extends DailyChallengeStatus {
   improved: boolean;
 }
 
+export interface DailyBadgeStatus {
+  currentStreak: number;
+  maxStreak: number;
+  highestBadgePower: number | null;
+  highestBadgeDays: number | null;
+  nextBadgePower: number | null;
+  nextBadgeDays: number | null;
+  daysToNextBadge: number | null;
+}
+
 export interface ScoreboardStore {
   top(limit?: number): Promise<ScoreEntry[]>;
   add(entry: ScoreEntry): Promise<void>;
@@ -42,6 +52,7 @@ export interface ScoreboardStore {
   topDaily(challengeKey: string, limit?: number): Promise<ScoreEntry[]>;
   addDaily(challengeKey: string, entry: ScoreEntry): Promise<DailyChallengeSubmitResult>;
   getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus>;
+  getDailyBadgeStatus(challengeKey: string): Promise<DailyBadgeStatus>;
 }
 
 class LocalEntryStore {
@@ -249,6 +260,12 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     return Promise.resolve(this.getLocalDailyStatus(challengeKey));
   }
 
+  public getDailyBadgeStatus(challengeKey: string): Promise<DailyBadgeStatus> {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const keys = readAcceptedDailyChallengeKeys(this.storage);
+    return Promise.resolve(computeDailyBadgeStatus(keys, normalized));
+  }
+
   private getLocalDailyStatus(challengeKey: string): DailyChallengeStatus {
     const normalized = normalizeChallengeKey(challengeKey);
     const attemptsUsed = readDailyAttempts(this.storage, normalized);
@@ -269,6 +286,7 @@ class TauriScoreboardStore implements ScoreboardStore {
     private readonly resolveDailyStore: DailyStoreResolver,
     private readonly supabaseUrl: string,
     private readonly supabaseAnonKey: string,
+    private readonly storage: Storage = window.localStorage,
   ) {}
 
   public async top(limit = 10): Promise<ScoreEntry[]> {
@@ -356,6 +374,12 @@ class TauriScoreboardStore implements ScoreboardStore {
       supabaseAnonKey: this.supabaseAnonKey || null,
     });
     return normalizeDailyChallengeStatus(status, challengeKey);
+  }
+
+  public getDailyBadgeStatus(challengeKey: string): Promise<DailyBadgeStatus> {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const keys = readAcceptedDailyChallengeKeys(this.storage);
+    return Promise.resolve(computeDailyBadgeStatus(keys, normalized));
   }
 
   private normalizeRemoteRows(rows: ReadonlyArray<ScoreEntry>): ScoreEntry[] {
@@ -448,6 +472,7 @@ export function createScoreboardStore(): ScoreboardStore {
     resolveDailyStore,
     supabaseUrl,
     supabaseAnonKey,
+    window.localStorage,
   );
 }
 
@@ -470,6 +495,7 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
 type DailyStoreResolver = (challengeKey: string) => LocalEntryStore;
 const DAILY_CHALLENGE_MAX_ATTEMPTS = 3;
 const DAILY_ATTEMPTS_STORAGE_PREFIX = "torus-daily-attempts-v1:";
+const DAILY_BADGE_MAX_POWER = 9;
 
 function createDailyStoreResolver(
   storage: Storage,
@@ -565,6 +591,140 @@ function normalizeDailyChallengeSubmitResult(
     accepted: raw.accepted === true,
     improved: raw.improved === true,
   };
+}
+
+function readAcceptedDailyChallengeKeys(storage: Storage): string[] {
+  const keys = new Set<string>();
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (!key || !key.startsWith(DAILY_ATTEMPTS_STORAGE_PREFIX)) {
+      continue;
+    }
+    const challengeKey = normalizeChallengeKey(key.slice(DAILY_ATTEMPTS_STORAGE_PREFIX.length));
+    if (!isValidChallengeKey(challengeKey)) {
+      continue;
+    }
+    const attempts = readDailyAttempts(storage, challengeKey);
+    if (attempts > 0) {
+      keys.add(challengeKey);
+    }
+  }
+  return [...keys].sort((a, b) => compareChallengeKeys(a, b));
+}
+
+function computeDailyBadgeStatus(
+  acceptedChallengeKeys: ReadonlyArray<string>,
+  challengeKey: string,
+): DailyBadgeStatus {
+  const normalized = acceptedChallengeKeys
+    .map((value) => normalizeChallengeKey(value))
+    .filter((value) => isValidChallengeKey(value))
+    .sort((a, b) => compareChallengeKeys(a, b));
+
+  if (normalized.length === 0) {
+    return badgeStatusFromStreaks(0, 0);
+  }
+
+  let maxStreak = 1;
+  let currentRun = 1;
+  let latestRun = 1;
+  for (let index = 1; index < normalized.length; index += 1) {
+    if (isNextChallengeDay(normalized[index - 1], normalized[index])) {
+      currentRun += 1;
+    } else {
+      currentRun = 1;
+    }
+    if (currentRun > maxStreak) {
+      maxStreak = currentRun;
+    }
+  }
+
+  for (let index = normalized.length - 1; index > 0; index -= 1) {
+    if (isNextChallengeDay(normalized[index - 1], normalized[index])) {
+      latestRun += 1;
+      continue;
+    }
+    break;
+  }
+
+  const latestKey = normalized[normalized.length - 1];
+  const currentStreak = (
+    latestKey === challengeKey || isNextChallengeDay(latestKey, challengeKey)
+  )
+    ? latestRun
+    : 0;
+  return badgeStatusFromStreaks(currentStreak, maxStreak);
+}
+
+function badgeStatusFromStreaks(currentStreak: number, maxStreak: number): DailyBadgeStatus {
+  const highestBadgePower = resolveBadgePower(maxStreak);
+  const highestBadgeDays = highestBadgePower === null ? null : 2 ** highestBadgePower;
+  const nextBadgePower = highestBadgePower === null
+    ? 0
+    : highestBadgePower >= DAILY_BADGE_MAX_POWER
+      ? null
+      : highestBadgePower + 1;
+  const nextBadgeDays = nextBadgePower === null ? null : 2 ** nextBadgePower;
+  const daysToNextBadge = nextBadgeDays === null
+    ? null
+    : Math.max(0, nextBadgeDays - currentStreak);
+
+  return {
+    currentStreak,
+    maxStreak,
+    highestBadgePower,
+    highestBadgeDays,
+    nextBadgePower,
+    nextBadgeDays,
+    daysToNextBadge,
+  };
+}
+
+function resolveBadgePower(streak: number): number | null {
+  if (streak < 1) {
+    return null;
+  }
+  let power = 0;
+  while (power < DAILY_BADGE_MAX_POWER && (2 ** (power + 1)) <= streak) {
+    power += 1;
+  }
+  return power;
+}
+
+function isNextChallengeDay(previous: string, next: string): boolean {
+  const previousTs = challengeKeyToUtcTimestamp(previous);
+  const nextTs = challengeKeyToUtcTimestamp(next);
+  if (previousTs === null || nextTs === null) {
+    return false;
+  }
+  return nextTs - previousTs === 24 * 60 * 60 * 1000;
+}
+
+function challengeKeyToUtcTimestamp(challengeKey: string): number | null {
+  if (!isValidChallengeKey(challengeKey)) {
+    return null;
+  }
+  const [yearRaw, monthRaw, dayRaw] = challengeKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null;
+  }
+  return Date.UTC(year, month - 1, day);
+}
+
+function compareChallengeKeys(left: string, right: string): number {
+  const leftTs = challengeKeyToUtcTimestamp(left);
+  const rightTs = challengeKeyToUtcTimestamp(right);
+  if (leftTs === null || rightTs === null) {
+    return left.localeCompare(right);
+  }
+  return leftTs - rightTs;
+}
+
+function isValidChallengeKey(challengeKey: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(challengeKey);
 }
 
 function isEntryBetter(entry: ScoreEntry, best: ScoreEntry | null): boolean {
