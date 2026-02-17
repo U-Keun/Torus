@@ -1,5 +1,6 @@
 import type { Difficulty, GameSnapshot, PoleEntry, TorusCell } from "../game";
 import type { ScoreEntry } from "../scoreboard";
+import { renderGlobalRankTrophyIcon } from "./badge-icons";
 import type { TorusDom } from "./layout";
 
 export type GameStatus = "Paused" | "Running" | "Game Over";
@@ -86,7 +87,7 @@ export class TorusRenderer {
           ? '<span class="score-me-tag" aria-label="My record">Me</span>'
           : "";
         const rankBadgeMarkup = showGlobalRankBadge && index < 3
-          ? `<span class="score-rank-badge rank-${index + 1}" title="Global Rank #${index + 1}" aria-label="Global Rank ${index + 1}">${renderRankTrophyIconMarkup(index + 1)}</span>`
+          ? `<span class="score-rank-badge rank-${index + 1}" title="Global Rank #${index + 1}" aria-label="Global Rank ${index + 1}">${renderGlobalRankTrophyIcon(index + 1)}</span>`
           : "";
         const meBadgeMarkup = (
           showMeTag &&
@@ -413,18 +414,5 @@ function renderImportIconMarkup(): string {
     <path d="M12 3v12" />
     <path d="m8 11 4 4 4-4" />
     <path d="M8 5H4a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-4" />
-  </svg>`;
-}
-
-function renderRankTrophyIconMarkup(rank: number): string {
-  const safeRank = Math.min(3, Math.max(1, Math.floor(rank)));
-  return `<svg class="score-rank-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <text x="12" y="8.2" text-anchor="middle" dominant-baseline="middle" font-size="7.2" font-weight="500" font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial" fill="none" stroke="currentColor" stroke-width="0.6" paint-order="stroke" stroke-linecap="round" stroke-linejoin="round">${safeRank}</text>
-    <path d="M10 14.66v1.626a2 2 0 0 1-.976 1.696A5 5 0 0 0 7 21.978"/>
-    <path d="M14 14.66v1.626a2 2 0 0 0 .976 1.696A5 5 0 0 1 17 21.978"/>
-    <path d="M18 9h1.5a1 1 0 0 0 0-5H18"/>
-    <path d="M4 22h16"/>
-    <path d="M6 9a6 6 0 0 0 12 0V3a1 1 0 0 0-1-1H7a1 1 0 0 0-1 1z"/>
-    <path d="M6 9H4.5a1 1 0 0 1 0-5H6"/>
   </svg>`;
 }
