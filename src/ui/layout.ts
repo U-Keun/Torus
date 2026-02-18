@@ -7,6 +7,7 @@ export interface TorusDom {
   difficultyEl: HTMLSelectElement;
   modeBtn: HTMLButtonElement;
   challengeInfoEl: HTMLSpanElement;
+  dailyBadgeEl: HTMLSpanElement;
   boxStageEl: HTMLDivElement;
   boxGridEl: HTMLDivElement;
   flyingLayerEl: HTMLDivElement;
@@ -125,6 +126,7 @@ const APP_TEMPLATE = `
       <div class="controls-left">
         <button id="mode-btn">Mode: Classic</button>
         <span id="challenge-info" class="challenge-info">Classic mode</span>
+        <span id="daily-badge" class="daily-badge hidden" role="img" aria-label="Daily streak badge"></span>
       </div>
       <div class="controls-right">
         <button id="new-game">New (1)</button>
@@ -355,6 +357,7 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     difficultyEl: must<HTMLSelectElement>(container, "#difficulty"),
     modeBtn: must<HTMLButtonElement>(container, "#mode-btn"),
     challengeInfoEl: must<HTMLSpanElement>(container, "#challenge-info"),
+    dailyBadgeEl: must<HTMLSpanElement>(container, "#daily-badge"),
     boxStageEl: must<HTMLDivElement>(container, "#box-stage"),
     boxGridEl: must<HTMLDivElement>(container, "#box-grid"),
     flyingLayerEl: must<HTMLDivElement>(container, "#flying-layer"),
