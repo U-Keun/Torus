@@ -106,6 +106,15 @@ supabase functions deploy verify-score --no-verify-jwt
 supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
 ```
 
+### Edge Function migration note
+
+- Edge Function names are immutable in practice. To "rename", deploy a new function name.
+- Recommended rollout:
+  1. Deploy `verify-score`
+  2. Release client versions that call `verify-score`
+  3. Keep `verify-daily-score` temporarily for older clients
+  4. Remove `verify-daily-score` after old versions are no longer active
+
 The schema includes:
 
 - `scores.player_name` (`text`)
@@ -127,6 +136,12 @@ RLS behavior:
 - Direct `insert/update` on `scores` from anon/authenticated clients is blocked.
 - Global/Daily writes are accepted only after Edge Function replay verification.
 - `submit_global_score(...)` and `submit_daily_score(...)` RPC execute permissions are restricted to `service_role`.
+
+### Secrets policy
+
+- It is safe and recommended to commit `/supabase/schema.sql` and `/supabase/functions/**`.
+- Never commit secrets (`SUPABASE_SERVICE_ROLE_KEY`, DB password, JWT secrets, private keys, `.env*` values).
+- Keep runtime secrets only in Supabase secrets / CI secrets / local untracked env files.
 
 Ranking query order is:
 
