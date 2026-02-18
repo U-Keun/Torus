@@ -305,6 +305,37 @@ code {
   font-size: clamp(0.68rem, 0.92vh, 0.76rem);
 }
 
+.hud-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: min(42vw, 460px);
+  flex: 1 1 auto;
+}
+
+.hud-update.hidden {
+  display: none;
+}
+
+.hud-update-message {
+  color: #ffd6a7;
+  font-size: clamp(0.64rem, 0.88vh, 0.74rem);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.hud-update.required .hud-update-message {
+  color: #ffd0b8;
+}
+
+.hud-update-link {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+}
+
 .challenge-info {
   display: inline-flex;
   align-items: center;
@@ -1697,6 +1728,10 @@ button:active {
 
   .gauge-wrap {
     width: 96px;
+  }
+
+  .hud-update {
+    max-width: min(56vw, 320px);
   }
 
   :root {

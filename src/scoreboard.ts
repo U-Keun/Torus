@@ -12,6 +12,21 @@ interface RawSkillUsageEntry {
   command?: string | null;
 }
 
+interface RawReplayInputEvent {
+  time: number;
+  move: ReplayMove;
+}
+
+interface RawDailyReplayProof {
+  version: number;
+  difficulty: number;
+  seed: number;
+  finalTime: number;
+  finalScore: number;
+  finalLevel: number;
+  inputs: ReadonlyArray<RawReplayInputEvent>;
+}
+
 export interface ScoreEntry {
   user: string;
   score: number;
@@ -19,6 +34,7 @@ export interface ScoreEntry {
   date: string;
   skillUsage: SkillUsageEntry[];
   isMe?: boolean;
+  replayProof?: DailyReplayProof;
 }
 
 export interface DailyChallengeStatus {
@@ -27,11 +43,39 @@ export interface DailyChallengeStatus {
   attemptsLeft: number;
   maxAttempts: number;
   canSubmit: boolean;
+  hasActiveAttempt: boolean;
+}
+
+export interface DailyAttemptStartResult extends DailyChallengeStatus {
+  accepted: boolean;
+  resumed: boolean;
+  attemptToken: string | null;
+}
+
+export interface DailyAttemptForfeitResult extends DailyChallengeStatus {
+  accepted: boolean;
 }
 
 export interface DailyChallengeSubmitResult extends DailyChallengeStatus {
   accepted: boolean;
   improved: boolean;
+}
+
+export type ReplayMove = "left" | "right" | "up" | "down";
+
+export interface ReplayInputEvent {
+  time: number;
+  move: ReplayMove;
+}
+
+export interface DailyReplayProof {
+  version: 1;
+  difficulty: 1 | 2 | 3;
+  seed: number;
+  finalTime: number;
+  finalScore: number;
+  finalLevel: number;
+  inputs: ReplayInputEvent[];
 }
 
 export interface DailyBadgeStatus {
@@ -46,11 +90,21 @@ export interface DailyBadgeStatus {
 
 export interface ScoreboardStore {
   top(limit?: number): Promise<ScoreEntry[]>;
-  add(entry: ScoreEntry): Promise<void>;
+  add(entry: ScoreEntry, replayProof: DailyReplayProof): Promise<void>;
   topPersonal(limit?: number): Promise<ScoreEntry[]>;
   addPersonal(entry: ScoreEntry): Promise<void>;
   topDaily(challengeKey: string, limit?: number): Promise<ScoreEntry[]>;
-  addDaily(challengeKey: string, entry: ScoreEntry): Promise<DailyChallengeSubmitResult>;
+  startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult>;
+  addDaily(
+    challengeKey: string,
+    attemptToken: string,
+    entry: ScoreEntry,
+    replayProof: DailyReplayProof,
+  ): Promise<DailyChallengeSubmitResult>;
+  forfeitDailyAttempt(
+    challengeKey: string,
+    attemptToken: string,
+  ): Promise<DailyAttemptForfeitResult>;
   getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus>;
   getDailyBadgeStatus(challengeKey: string): Promise<DailyBadgeStatus>;
 }
@@ -83,6 +137,7 @@ class LocalEntryStore {
         deduped.set(key, {
           ...row,
           isMe: current.isMe === true || row.isMe === true,
+          replayProof: row.replayProof ?? current.replayProof,
         });
         continue;
       }
@@ -115,6 +170,7 @@ class LocalEntryStore {
           date: entry.date,
           skillUsage: this.normalizeSkillUsage(entry.skillUsage),
           isMe: entry.isMe === true,
+          replayProof: normalizeReplayProof(entry.replayProof),
         }));
     } catch {
       return [];
@@ -208,7 +264,7 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     return this.globalStore.top(limit);
   }
 
-  public add(entry: ScoreEntry): Promise<void> {
+  public add(entry: ScoreEntry, _replayProof: DailyReplayProof): Promise<void> {
     return this.globalStore.add({
       ...entry,
       isMe: true,
@@ -227,33 +283,86 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     return this.resolveDailyStore(challengeKey).top(limit);
   }
 
+  public startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult> {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const status = this.getLocalDailyStatus(normalized);
+    const activeAttemptToken = readDailyActiveAttemptToken(this.storage, normalized);
+    if (activeAttemptToken) {
+      return Promise.resolve({
+        ...status,
+        accepted: true,
+        resumed: true,
+        attemptToken: activeAttemptToken,
+      });
+    }
+    if (!status.canSubmit) {
+      return Promise.resolve({
+        ...status,
+        accepted: false,
+        resumed: false,
+        attemptToken: null,
+      });
+    }
+    this.setLocalDailyAttempts(normalized, status.attemptsUsed + 1);
+    const attemptToken = createLocalAttemptToken(normalized);
+    writeDailyActiveAttemptToken(this.storage, normalized, attemptToken);
+    const startedStatus = this.getLocalDailyStatus(normalized);
+    return Promise.resolve({
+      ...startedStatus,
+      accepted: true,
+      resumed: false,
+      attemptToken,
+    });
+  }
+
   public async addDaily(
     challengeKey: string,
+    attemptToken: string,
     entry: ScoreEntry,
+    _replayProof: DailyReplayProof,
   ): Promise<DailyChallengeSubmitResult> {
-    const status = this.getLocalDailyStatus(challengeKey);
-    if (!status.canSubmit) {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const status = this.getLocalDailyStatus(normalized);
+    const activeAttemptToken = readDailyActiveAttemptToken(this.storage, normalized);
+    if (!activeAttemptToken || activeAttemptToken !== attemptToken) {
       return {
         ...status,
         accepted: false,
         improved: false,
       };
     }
-    const currentBest = (await this.resolveDailyStore(challengeKey).top(1))[0] ?? null;
+    const currentBest = (await this.resolveDailyStore(normalized).top(1))[0] ?? null;
     const improved = isEntryBetter(entry, currentBest);
-    await this.resolveDailyStore(challengeKey).add({
+    await this.resolveDailyStore(normalized).add({
       ...entry,
       isMe: true,
     });
-    const nextStatus = this.setLocalDailyAttempts(
-      challengeKey,
-      status.attemptsUsed + 1,
-    );
+    clearDailyActiveAttemptToken(this.storage, normalized);
+    const nextStatus = this.getLocalDailyStatus(normalized);
     return {
       ...nextStatus,
       accepted: true,
       improved,
     };
+  }
+
+  public forfeitDailyAttempt(
+    challengeKey: string,
+    attemptToken: string,
+  ): Promise<DailyAttemptForfeitResult> {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const activeAttemptToken = readDailyActiveAttemptToken(this.storage, normalized);
+    if (!activeAttemptToken || activeAttemptToken !== attemptToken) {
+      return Promise.resolve({
+        ...this.getLocalDailyStatus(normalized),
+        accepted: false,
+      });
+    }
+    clearDailyActiveAttemptToken(this.storage, normalized);
+    return Promise.resolve({
+      ...this.getLocalDailyStatus(normalized),
+      accepted: true,
+    });
   }
 
   public getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus> {
@@ -269,13 +378,15 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
   private getLocalDailyStatus(challengeKey: string): DailyChallengeStatus {
     const normalized = normalizeChallengeKey(challengeKey);
     const attemptsUsed = readDailyAttempts(this.storage, normalized);
-    return toDailyChallengeStatus(normalized, attemptsUsed);
+    const hasActiveAttempt = Boolean(readDailyActiveAttemptToken(this.storage, normalized));
+    return toDailyChallengeStatus(normalized, attemptsUsed, hasActiveAttempt);
   }
 
   private setLocalDailyAttempts(challengeKey: string, attemptsUsed: number): DailyChallengeStatus {
     const normalized = normalizeChallengeKey(challengeKey);
     writeDailyAttempts(this.storage, normalized, attemptsUsed);
-    return toDailyChallengeStatus(normalized, attemptsUsed);
+    const hasActiveAttempt = Boolean(readDailyActiveAttemptToken(this.storage, normalized));
+    return toDailyChallengeStatus(normalized, attemptsUsed, hasActiveAttempt);
   }
 }
 
@@ -305,7 +416,7 @@ class TauriScoreboardStore implements ScoreboardStore {
     }
   }
 
-  public async add(entry: ScoreEntry): Promise<void> {
+  public async add(entry: ScoreEntry, replayProof: DailyReplayProof): Promise<void> {
     await this.globalStore.add({
       ...entry,
       isMe: true,
@@ -313,6 +424,7 @@ class TauriScoreboardStore implements ScoreboardStore {
     try {
       await invoke("submit_global_score", {
         entry,
+        replayProof,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
       });
@@ -346,13 +458,26 @@ class TauriScoreboardStore implements ScoreboardStore {
     }
   }
 
+  public async startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult> {
+    const result = await invoke<DailyAttemptStartResult>("start_daily_attempt", {
+      challengeKey,
+      supabaseUrl: this.supabaseUrl || null,
+      supabaseAnonKey: this.supabaseAnonKey || null,
+    });
+    return normalizeDailyAttemptStartResult(result, challengeKey);
+  }
+
   public async addDaily(
     challengeKey: string,
+    attemptToken: string,
     entry: ScoreEntry,
+    replayProof: DailyReplayProof,
   ): Promise<DailyChallengeSubmitResult> {
     const result = await invoke<DailyChallengeSubmitResult>("submit_daily_score", {
       challengeKey,
+      attemptToken,
       entry,
+      replayProof,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
     });
@@ -365,6 +490,19 @@ class TauriScoreboardStore implements ScoreboardStore {
       writeDailyAttempts(window.localStorage, normalized.challengeKey, normalized.attemptsUsed);
     }
     return normalized;
+  }
+
+  public async forfeitDailyAttempt(
+    challengeKey: string,
+    attemptToken: string,
+  ): Promise<DailyAttemptForfeitResult> {
+    const result = await invoke<DailyAttemptForfeitResult>("forfeit_daily_attempt", {
+      challengeKey,
+      attemptToken,
+      supabaseUrl: this.supabaseUrl || null,
+      supabaseAnonKey: this.supabaseAnonKey || null,
+    });
+    return normalizeDailyAttemptForfeitResult(result, challengeKey);
   }
 
   public async getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus> {
@@ -407,6 +545,10 @@ class TauriScoreboardStore implements ScoreboardStore {
       typeof record.date === "string" &&
       (typeof record.isMe === "boolean" || typeof record.isMe === "undefined") &&
       (
+        typeof record.replayProof === "undefined" ||
+        this.isReplayProof(record.replayProof)
+      ) &&
+      (
         typeof record.skillUsage === "undefined" ||
         this.isSkillUsageArray(record.skillUsage)
       )
@@ -446,6 +588,43 @@ class TauriScoreboardStore implements ScoreboardStore {
         typeof row.command === "undefined"
       )
     );
+  }
+
+  private isReplayProof(raw: unknown): raw is RawDailyReplayProof {
+    if (!raw || typeof raw !== "object") {
+      return false;
+    }
+    const row = raw as Record<string, unknown>;
+    if (
+      row.version !== 1 ||
+      (row.difficulty !== 1 && row.difficulty !== 2 && row.difficulty !== 3) ||
+      typeof row.seed !== "number" ||
+      !Number.isFinite(row.seed) ||
+      typeof row.finalTime !== "number" ||
+      !Number.isFinite(row.finalTime) ||
+      typeof row.finalScore !== "number" ||
+      !Number.isFinite(row.finalScore) ||
+      typeof row.finalLevel !== "number" ||
+      !Number.isFinite(row.finalLevel)
+    ) {
+      return false;
+    }
+    return Array.isArray(row.inputs) && row.inputs.every((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return false;
+      }
+      const event = entry as Record<string, unknown>;
+      return (
+        typeof event.time === "number" &&
+        Number.isFinite(event.time) &&
+        (
+          event.move === "left" ||
+          event.move === "right" ||
+          event.move === "up" ||
+          event.move === "down"
+        )
+      );
+    });
   }
 }
 
@@ -492,9 +671,84 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
   return value.length > 0 ? value : null;
 }
 
+function normalizeReplayProof(raw: unknown): DailyReplayProof | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const version = record.version;
+  const difficulty = record.difficulty;
+  const seed = record.seed;
+  const finalTime = record.finalTime;
+  const finalScore = record.finalScore;
+  const finalLevel = record.finalLevel;
+  if (version !== 1) {
+    return undefined;
+  }
+  if (difficulty !== 1 && difficulty !== 2 && difficulty !== 3) {
+    return undefined;
+  }
+  if (
+    typeof seed !== "number" ||
+    !Number.isFinite(seed) ||
+    typeof finalTime !== "number" ||
+    !Number.isFinite(finalTime) ||
+    typeof finalScore !== "number" ||
+    !Number.isFinite(finalScore) ||
+    typeof finalLevel !== "number" ||
+    !Number.isFinite(finalLevel)
+  ) {
+    return undefined;
+  }
+  const inputs = normalizeReplayInputs(record.inputs);
+  return {
+    version: 1,
+    difficulty,
+    seed: Math.trunc(seed) >>> 0,
+    finalTime: Math.max(0, Math.trunc(finalTime)),
+    finalScore: Math.max(0, Math.trunc(finalScore)),
+    finalLevel: Math.max(0, Math.trunc(finalLevel)),
+    inputs,
+  };
+}
+
+function normalizeReplayInputs(raw: unknown): ReplayInputEvent[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const normalized: ReplayInputEvent[] = [];
+  let lastTime = -1;
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const move = record.move;
+    const time = record.time;
+    if (
+      typeof time !== "number" ||
+      !Number.isFinite(time) ||
+      (move !== "left" && move !== "right" && move !== "up" && move !== "down")
+    ) {
+      continue;
+    }
+    const normalizedTime = Math.max(0, Math.trunc(time));
+    if (normalizedTime < lastTime) {
+      continue;
+    }
+    normalized.push({
+      time: normalizedTime,
+      move,
+    });
+    lastTime = normalizedTime;
+  }
+  return normalized;
+}
+
 type DailyStoreResolver = (challengeKey: string) => LocalEntryStore;
 const DAILY_CHALLENGE_MAX_ATTEMPTS = 3;
 const DAILY_ATTEMPTS_STORAGE_PREFIX = "torus-daily-attempts-v1:";
+const DAILY_ACTIVE_ATTEMPT_TOKEN_STORAGE_PREFIX = "torus-daily-active-attempt-token-v1:";
 const DAILY_BADGE_MAX_POWER = 9;
 
 function createDailyStoreResolver(
@@ -530,6 +784,10 @@ function dailyAttemptsStorageKey(challengeKey: string): string {
   return `${DAILY_ATTEMPTS_STORAGE_PREFIX}${challengeKey}`;
 }
 
+function dailyActiveAttemptTokenStorageKey(challengeKey: string): string {
+  return `${DAILY_ACTIVE_ATTEMPT_TOKEN_STORAGE_PREFIX}${challengeKey}`;
+}
+
 function readDailyAttempts(storage: Storage, challengeKey: string): number {
   try {
     const raw = storage.getItem(dailyAttemptsStorageKey(challengeKey));
@@ -554,6 +812,44 @@ function writeDailyAttempts(storage: Storage, challengeKey: string, attemptsUsed
   }
 }
 
+function readDailyActiveAttemptToken(storage: Storage, challengeKey: string): string | null {
+  try {
+    const raw = storage.getItem(dailyActiveAttemptTokenStorageKey(challengeKey));
+    if (!raw) {
+      return null;
+    }
+    const token = raw.trim();
+    return token.length > 0 ? token : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeDailyActiveAttemptToken(
+  storage: Storage,
+  challengeKey: string,
+  attemptToken: string,
+): void {
+  try {
+    const token = attemptToken.trim();
+    if (token.length === 0) {
+      storage.removeItem(dailyActiveAttemptTokenStorageKey(challengeKey));
+      return;
+    }
+    storage.setItem(dailyActiveAttemptTokenStorageKey(challengeKey), token);
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
+function clearDailyActiveAttemptToken(storage: Storage, challengeKey: string): void {
+  try {
+    storage.removeItem(dailyActiveAttemptTokenStorageKey(challengeKey));
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
 function clampAttempts(value: number): number {
   if (!Number.isFinite(value)) {
     return 0;
@@ -561,7 +857,11 @@ function clampAttempts(value: number): number {
   return Math.min(DAILY_CHALLENGE_MAX_ATTEMPTS, Math.max(0, Math.floor(value)));
 }
 
-function toDailyChallengeStatus(challengeKey: string, attemptsUsed: number): DailyChallengeStatus {
+function toDailyChallengeStatus(
+  challengeKey: string,
+  attemptsUsed: number,
+  hasActiveAttempt: boolean = false,
+): DailyChallengeStatus {
   const used = clampAttempts(attemptsUsed);
   const attemptsLeft = Math.max(0, DAILY_CHALLENGE_MAX_ATTEMPTS - used);
   return {
@@ -570,6 +870,7 @@ function toDailyChallengeStatus(challengeKey: string, attemptsUsed: number): Dai
     attemptsLeft,
     maxAttempts: DAILY_CHALLENGE_MAX_ATTEMPTS,
     canSubmit: attemptsLeft > 0,
+    hasActiveAttempt,
   };
 }
 
@@ -578,7 +879,36 @@ function normalizeDailyChallengeStatus(
   fallbackChallengeKey: string,
 ): DailyChallengeStatus {
   const challengeKey = normalizeChallengeKey(raw.challengeKey || fallbackChallengeKey);
-  return toDailyChallengeStatus(challengeKey, raw.attemptsUsed);
+  return toDailyChallengeStatus(
+    challengeKey,
+    raw.attemptsUsed,
+    raw.hasActiveAttempt === true,
+  );
+}
+
+function normalizeDailyAttemptStartResult(
+  raw: DailyAttemptStartResult,
+  fallbackChallengeKey: string,
+): DailyAttemptStartResult {
+  const status = normalizeDailyChallengeStatus(raw, fallbackChallengeKey);
+  const token = typeof raw.attemptToken === "string" ? raw.attemptToken.trim() : "";
+  return {
+    ...status,
+    accepted: raw.accepted === true,
+    resumed: raw.resumed === true,
+    attemptToken: token.length > 0 ? token : null,
+  };
+}
+
+function normalizeDailyAttemptForfeitResult(
+  raw: DailyAttemptForfeitResult,
+  fallbackChallengeKey: string,
+): DailyAttemptForfeitResult {
+  const status = normalizeDailyChallengeStatus(raw, fallbackChallengeKey);
+  return {
+    ...status,
+    accepted: raw.accepted === true,
+  };
 }
 
 function normalizeDailyChallengeSubmitResult(
@@ -591,6 +921,12 @@ function normalizeDailyChallengeSubmitResult(
     accepted: raw.accepted === true,
     improved: raw.improved === true,
   };
+}
+
+function createLocalAttemptToken(challengeKey: string): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).slice(2, 10);
+  return `${challengeKey}-${timestamp}-${random}`;
 }
 
 function readAcceptedDailyChallengeKeys(storage: Storage): string[] {
