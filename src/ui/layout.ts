@@ -5,6 +5,9 @@ export interface TorusDom {
   statusEl: HTMLSpanElement;
   gaugeFillEl: HTMLDivElement;
   difficultyEl: HTMLSelectElement;
+  updateNoticeEl: HTMLSpanElement;
+  updateNoticeMessageEl: HTMLSpanElement;
+  updateNoticeLinkBtn: HTMLButtonElement;
   modeBtn: HTMLButtonElement;
   challengeInfoEl: HTMLSpanElement;
   dailyBadgeEl: HTMLSpanElement;
@@ -31,6 +34,10 @@ export interface TorusDom {
   submitConfirmMessageEl: HTMLParagraphElement;
   submitConfirmConfirmBtn: HTMLButtonElement;
   submitConfirmCancelBtn: HTMLButtonElement;
+  sessionRestoreModalEl: HTMLDivElement;
+  sessionRestoreMessageEl: HTMLParagraphElement;
+  sessionRestoreContinueBtn: HTMLButtonElement;
+  sessionRestoreResetBtn: HTMLButtonElement;
   themeChipEl: HTMLDivElement;
   themeCustomModalEl: HTMLDivElement;
   themeCustomDialogEl: HTMLDivElement;
@@ -119,6 +126,11 @@ const APP_TEMPLATE = `
 	            <option value="3">3 - Half-glazed / Flip</option>
 	          </select>
 	        </label>
+          <span id="update-notice" class="hud-update hidden" role="status" aria-live="polite">
+            <span class="hud-sep">|</span>
+            <span id="update-notice-message" class="hud-update-message"></span>
+            <button id="update-notice-link" class="mini-btn hud-update-link" type="button">Download</button>
+          </span>
 	      </div>
 	    </section>
 
@@ -242,6 +254,17 @@ const APP_TEMPLATE = `
       </div>
     </div>
 
+    <div id="session-restore-modal" class="gameover-modal hidden" role="dialog" aria-modal="true" aria-labelledby="session-restore-title">
+      <div class="gameover-dialog submit-confirm-dialog">
+        <h2 id="session-restore-title">Resume Previous Game</h2>
+        <p id="session-restore-message" class="submit-confirm-message">A recoverable game was found.</p>
+        <div class="gameover-actions">
+          <button id="session-restore-reset" type="button">Start Fresh</button>
+          <button id="session-restore-continue" type="button">Continue</button>
+        </div>
+      </div>
+    </div>
+
     <div id="theme-custom-modal" class="gameover-modal hidden" role="dialog" aria-modal="true" aria-labelledby="theme-custom-title">
       <div id="theme-custom-dialog" class="gameover-dialog theme-custom-dialog">
         <div class="theme-custom-top">
@@ -355,6 +378,9 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     statusEl: must<HTMLSpanElement>(container, "#status"),
     gaugeFillEl: must<HTMLDivElement>(container, "#gauge-fill"),
     difficultyEl: must<HTMLSelectElement>(container, "#difficulty"),
+    updateNoticeEl: must<HTMLSpanElement>(container, "#update-notice"),
+    updateNoticeMessageEl: must<HTMLSpanElement>(container, "#update-notice-message"),
+    updateNoticeLinkBtn: must<HTMLButtonElement>(container, "#update-notice-link"),
     modeBtn: must<HTMLButtonElement>(container, "#mode-btn"),
     challengeInfoEl: must<HTMLSpanElement>(container, "#challenge-info"),
     dailyBadgeEl: must<HTMLSpanElement>(container, "#daily-badge"),
@@ -381,6 +407,10 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     submitConfirmMessageEl: must<HTMLParagraphElement>(container, "#submit-confirm-message"),
     submitConfirmConfirmBtn: must<HTMLButtonElement>(container, "#submit-confirm-ok"),
     submitConfirmCancelBtn: must<HTMLButtonElement>(container, "#submit-confirm-cancel"),
+    sessionRestoreModalEl: must<HTMLDivElement>(container, "#session-restore-modal"),
+    sessionRestoreMessageEl: must<HTMLParagraphElement>(container, "#session-restore-message"),
+    sessionRestoreContinueBtn: must<HTMLButtonElement>(container, "#session-restore-continue"),
+    sessionRestoreResetBtn: must<HTMLButtonElement>(container, "#session-restore-reset"),
     themeChipEl: must<HTMLDivElement>(container, "#theme-chip"),
     themeCustomModalEl: must<HTMLDivElement>(container, "#theme-custom-modal"),
     themeCustomDialogEl: must<HTMLDivElement>(container, "#theme-custom-dialog"),

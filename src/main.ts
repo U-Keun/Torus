@@ -1,13 +1,26 @@
 import "./styles.css";
+import { getVersion } from "@tauri-apps/api/app";
 import { isTauri } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-import { type Difficulty, type GameOverPayload, type GameSnapshot, TorusGame } from "./game";
+import {
+  type Difficulty,
+  type GameOverPayload,
+  type GameSnapshot,
+  type PersistedGameState,
+  TorusGame,
+} from "./game";
 import {
   createScoreboardStore,
+  type DailyAttemptForfeitResult,
+  type DailyAttemptStartResult,
   type DailyBadgeStatus,
   type DailyChallengeSubmitResult,
   type DailyChallengeStatus,
+  type DailyReplayProof,
+  type ReplayInputEvent,
+  type ReplayMove,
   type ScoreEntry,
   type SkillUsageEntry,
 } from "./scoreboard";
@@ -33,6 +46,23 @@ type NonDailyScoreboardView = "global" | "personal";
 type GameMode = "classic" | "daily";
 type KeyGuidePage = "basic" | "skills";
 
+interface PersistedSessionSnapshot {
+  version: 1;
+  savedAt: number;
+  gameMode: GameMode;
+  activeDailyChallengeKey: string | null;
+  activeDailyAttemptToken: string | null;
+  canResume: boolean;
+  autoHorizontalDirection: "left" | "right";
+  currentRunSkillUsage: SkillUsageEntry[];
+  currentRunReplaySeed?: number | null;
+  currentRunReplayInputs?: ReplayInputEvent[];
+  currentRunReplayDifficulty?: Difficulty | null;
+  currentDailyReplaySeed?: number | null;
+  currentDailyReplayInputs?: ReplayInputEvent[];
+  gameState: PersistedGameState;
+}
+
 const appRoot = document.querySelector<HTMLDivElement>("#app");
 if (!appRoot) {
   throw new Error("Missing #app container");
@@ -48,7 +78,11 @@ const DEVICE_BEST_STORAGE_KEY = "torus-device-best-v1";
 const SUBMIT_DB_PREF_STORAGE_KEY = "torus-submit-db-pref-v1";
 const LAST_UPDATE_CHECK_STORAGE_KEY = "torus-last-update-check-v1";
 const GAME_MODE_STORAGE_KEY = "torus-game-mode-v1";
+const SESSION_SNAPSHOT_STORAGE_KEY = "torus-session-snapshot-v1";
+const MAC_APP_STORE_URL = "https://apps.apple.com/kr/app/t-rus/id6759029986?mt=12";
+const MIN_SUPPORTED_MAC_VERSION = String(import.meta.env.VITE_MIN_SUPPORTED_MAC_VERSION ?? "").trim();
 const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 6;
+const SESSION_AUTOSAVE_INTERVAL_MS = 3000;
 const PERSONAL_SUBMIT_BUTTON_LABEL = "Submit";
 const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
@@ -58,8 +92,10 @@ const KEY_PAGE_FADE_MS = 220;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 const THEME_CUSTOM_FORM_IDLE_TEXT = "Adjust colors and click Apply or Save.";
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+const MAX_DAILY_REPLAY_INPUTS = 20000;
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
+let pendingSubmitReplayProof: DailyReplayProof | null = null;
 let keyCardVisible = true;
 let keyGuidePage: KeyGuidePage = "basic";
 let canResume = false;
@@ -77,16 +113,25 @@ let activeGameStatus: GameStatus = "Paused";
 let displayedScoreboardEntries: ScoreEntry[] = [];
 let currentRunSkillUsage: SkillUsageEntry[] = [];
 let pendingGameOverSkillUsage: SkillUsageEntry[] = [];
+let currentRunReplaySeed: number | null = null;
+let currentRunReplayInputs: ReplayInputEvent[] = [];
+let currentRunReplayDifficulty: Difficulty | null = null;
 let expandedScoreIndex: number | null = null;
 let latestSnapshot: GameSnapshot | null = null;
 let autoHorizontalDirection: "left" | "right" = "right";
 let activeDailyChallengeKey: string | null = null;
+let activeDailyAttemptToken: string | null = null;
 let modeButtonResizeTimer: number | null = null;
 let challengeInfoResizeTimer: number | null = null;
 let keyPageFadeTimer: number | null = null;
+let sessionAutosaveTimer: number | null = null;
 let dailyChallengeStatus: DailyChallengeStatus | null = null;
 let dailyBadgeStatus: DailyBadgeStatus | null = null;
 let startingDailyChallenge = false;
+let restoringSessionSnapshot = false;
+let lastSessionSnapshotPayload = "";
+let pendingSessionRestoreSnapshot: PersistedSessionSnapshot | null = null;
+let updateNoticeDownloadUrl: string | null = null;
 const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
 
 const game = new TorusGame(
@@ -133,9 +178,12 @@ bindUiControls();
 bindKeyboardControls();
 bindGameOverModal();
 bindSubmitConfirmModal();
+bindSessionRestoreModal();
 bindThemeCustomModal();
 bindSkillsModal();
 bindScoreDrawerInteractions();
+promptSessionRestoreIfAvailable();
+startSessionAutosave();
 void maybeCheckForUpdatesOnLaunch();
 
 window.addEventListener("resize", () => {
@@ -143,6 +191,8 @@ window.addEventListener("resize", () => {
 });
 
 window.addEventListener("beforeunload", () => {
+  saveSessionSnapshot(true);
+  stopSessionAutosave();
   skillRunner.cancelAll();
   game.destroy();
 });
@@ -227,6 +277,10 @@ function bindUiControls(): void {
   dom.submitPersonalBtn.addEventListener("click", () => {
     void openSubmitConfirmModal();
   });
+
+  dom.updateNoticeLinkBtn.addEventListener("click", () => {
+    void openUpdateNoticeDownload();
+  });
 }
 
 function scheduleInitialLayoutStabilization(): void {
@@ -298,6 +352,13 @@ function bindKeyboardControls(): void {
       return;
     }
 
+    if (isSessionRestoreModalOpen()) {
+      if (event.key === "Escape" || event.key === "Enter") {
+        event.preventDefault();
+      }
+      return;
+    }
+
     if (isSubmitConfirmModalOpen()) {
       if (event.key === "Escape") {
         closeSubmitConfirmModal();
@@ -358,17 +419,24 @@ function startNewGame(): void {
   closeSkillsModal();
   collapseExpandedScoreRow();
   skillRunner.cancelAll();
-  autoHorizontalDirection = "right";
-  currentRunSkillUsage = [];
-  pendingGameOverSkillUsage = [];
   if (gameMode === "daily") {
     void startDailyChallengeGame();
     return;
   }
+  autoHorizontalDirection = "right";
+  currentRunSkillUsage = [];
+  pendingGameOverSkillUsage = [];
+  const difficulty = parseDifficulty(dom.difficultyEl.value);
+  const replaySeed = createReplaySeed();
+  currentRunReplaySeed = replaySeed;
+  currentRunReplayInputs = [];
+  currentRunReplayDifficulty = difficulty;
   activeDailyChallengeKey = null;
-  game.startNewGame(parseDifficulty(dom.difficultyEl.value));
+  activeDailyAttemptToken = null;
+  game.startNewGame(difficulty, { randomSeed: replaySeed });
   canResume = true;
   setStatus("Running");
+  saveSessionSnapshot(true);
 }
 
 function resumeGame(): void {
@@ -377,12 +445,14 @@ function resumeGame(): void {
   }
   game.resume();
   setStatus("Running");
+  saveSessionSnapshot(true);
 }
 
 function pauseGame(): void {
   skillRunner.cancelAll();
   game.pause();
   setStatus("Paused");
+  saveSessionSnapshot(true);
 }
 
 function resetGame(): void {
@@ -395,10 +465,25 @@ function resetGame(): void {
   autoHorizontalDirection = "right";
   currentRunSkillUsage = [];
   pendingGameOverSkillUsage = [];
+  currentRunReplaySeed = null;
+  currentRunReplayInputs = [];
+  currentRunReplayDifficulty = null;
+  if (gameMode === "daily" && activeDailyChallengeKey && activeDailyAttemptToken) {
+    void scoreboardStore
+      .forfeitDailyAttempt(activeDailyChallengeKey, activeDailyAttemptToken)
+      .then((result) => {
+        setDailyChallengeStatus(toDailyChallengeStatus(result));
+      })
+      .catch((error) => {
+        console.warn("Failed to forfeit daily attempt on reset.", error);
+      });
+  }
   activeDailyChallengeKey = null;
+  activeDailyAttemptToken = null;
   game.reset();
   canResume = false;
   setStatus("Paused");
+  clearSessionSnapshot();
 }
 
 function setDifficulty(difficulty: Difficulty): void {
@@ -427,6 +512,25 @@ function setStatus(status: GameStatus): void {
   renderer.setStatus(status);
 }
 
+function hasRecoverableDailyAttemptState(
+  challengeKey: string,
+  attemptToken: string,
+): boolean {
+  if (!canResume) {
+    return false;
+  }
+  if (activeDailyChallengeKey !== challengeKey) {
+    return false;
+  }
+  if (!activeDailyAttemptToken || activeDailyAttemptToken !== attemptToken) {
+    return false;
+  }
+  if (currentRunReplaySeed === null) {
+    return false;
+  }
+  return hasRecoverableGameState(game.exportState());
+}
+
 async function startDailyChallengeGame(): Promise<void> {
   if (startingDailyChallenge) {
     return;
@@ -434,23 +538,66 @@ async function startDailyChallengeGame(): Promise<void> {
   startingDailyChallenge = true;
   const challenge = getCurrentDailyChallenge();
   try {
-    const status = await refreshDailyChallengeStatus(challenge.key);
-    if (!status) {
-      window.alert("Failed to verify Daily Challenge attempts. Check network/Supabase and try again.");
-      return;
-    }
-    if (!status.canSubmit) {
-      const used = status.attemptsUsed;
-      const max = status.maxAttempts;
+    let attemptResult = await scoreboardStore.startDailyAttempt(challenge.key);
+    setDailyChallengeStatus(toDailyChallengeStatus(attemptResult));
+    if (!attemptResult.accepted || !attemptResult.attemptToken) {
+      const used = attemptResult.attemptsUsed;
+      const max = attemptResult.maxAttempts;
       window.alert(`Daily Challenge limit reached (${used}/${max}). Try again tomorrow (UTC).`);
       return;
     }
 
+    if (
+      attemptResult.resumed &&
+      !hasRecoverableDailyAttemptState(challenge.key, attemptResult.attemptToken)
+    ) {
+      const forfeitResult = await scoreboardStore.forfeitDailyAttempt(
+        challenge.key,
+        attemptResult.attemptToken,
+      );
+      setDailyChallengeStatus(toDailyChallengeStatus(forfeitResult));
+      activeDailyAttemptToken = null;
+      if (!forfeitResult.accepted) {
+        window.alert("Failed to clear stale Daily attempt. Please try again.");
+        return;
+      }
+      attemptResult = await scoreboardStore.startDailyAttempt(challenge.key);
+      setDailyChallengeStatus(toDailyChallengeStatus(attemptResult));
+      if (!attemptResult.accepted || !attemptResult.attemptToken) {
+        const used = attemptResult.attemptsUsed;
+        const max = attemptResult.maxAttempts;
+        window.alert(`Daily Challenge limit reached (${used}/${max}). Try again tomorrow (UTC).`);
+        return;
+      }
+    }
+
     activeDailyChallengeKey = challenge.key;
+    activeDailyAttemptToken = attemptResult.attemptToken;
+
+    if (
+      attemptResult.resumed &&
+      hasRecoverableDailyAttemptState(challenge.key, attemptResult.attemptToken)
+    ) {
+      game.resume();
+      setStatus("Running");
+      saveSessionSnapshot(true);
+      return;
+    }
+
+    autoHorizontalDirection = "right";
+    currentRunSkillUsage = [];
+    pendingGameOverSkillUsage = [];
+    currentRunReplaySeed = challenge.seed;
+    currentRunReplayInputs = [];
+    currentRunReplayDifficulty = challenge.difficulty;
     setDifficulty(challenge.difficulty);
     game.startNewGame(challenge.difficulty, { randomSeed: challenge.seed });
     canResume = true;
     setStatus("Running");
+    saveSessionSnapshot(true);
+  } catch (error) {
+    console.warn("Failed to start daily challenge attempt.", error);
+    window.alert("Failed to verify Daily Challenge attempts. Check network/Supabase and try again.");
   } finally {
     startingDailyChallenge = false;
   }
@@ -737,11 +884,11 @@ function setChallengeInfoLabel(label: string, animate: boolean): void {
 
 function dispatchMove(direction: Direction): void {
   if (direction === "left") {
-    game.moveLeft();
+    applyLoggedMove("left");
     return;
   }
   if (direction === "right") {
-    game.moveRight();
+    applyLoggedMove("right");
     return;
   }
   if (direction === "autoHorizontal") {
@@ -753,10 +900,10 @@ function dispatchMove(direction: Direction): void {
     return;
   }
   if (direction === "up") {
-    game.moveUp();
+    applyLoggedMove("up");
     return;
   }
-  game.moveDown();
+  applyLoggedMove("down");
 }
 
 function dispatchDynamicHorizontalMove(
@@ -778,10 +925,42 @@ function dispatchDynamicHorizontalMove(
   }
 
   if (moveDirection === "left") {
-    game.moveLeft();
+    applyLoggedMove("left");
     return;
   }
-  game.moveRight();
+  applyLoggedMove("right");
+}
+
+function applyLoggedMove(move: ReplayMove): void {
+  const snapshot = latestSnapshot;
+  const gameState = snapshot ?? game.exportState();
+  if (move === "left") {
+    game.moveLeft();
+  } else if (move === "right") {
+    game.moveRight();
+  } else if (move === "up") {
+    game.moveUp();
+  } else {
+    game.moveDown();
+  }
+  appendRunReplayInput(gameState.time, move, gameState.gameOn);
+}
+
+function appendRunReplayInput(
+  time: number,
+  move: ReplayMove,
+  gameOn: boolean,
+): void {
+  if (!gameOn || currentRunReplaySeed === null) {
+    return;
+  }
+  if (currentRunReplayInputs.length >= MAX_DAILY_REPLAY_INPUTS) {
+    return;
+  }
+  currentRunReplayInputs.push({
+    time: Math.max(0, Math.trunc(time)),
+    move,
+  });
 }
 
 function oppositeHorizontalDirection(
@@ -813,6 +992,7 @@ function onGameOver(payload: GameOverPayload): void {
   setStatus("Game Over");
   canResume = false;
   pendingGameOverPayload = payload;
+  clearSessionSnapshot();
   openGameOverModal(payload);
 }
 
@@ -934,7 +1114,7 @@ function bindGameOverModal(): void {
   });
 
   dom.gameOverSkipBtn.addEventListener("click", () => {
-    closeGameOverModal();
+    resetGame();
   });
 
   dom.gameOverNameEl.addEventListener("keydown", (event) => {
@@ -949,7 +1129,7 @@ function bindGameOverModal(): void {
         event.preventDefault();
         return;
       }
-      closeGameOverModal();
+      resetGame();
       event.preventDefault();
     }
   });
@@ -959,7 +1139,7 @@ function bindGameOverModal(): void {
       if (gameMode === "daily") {
         return;
       }
-      closeGameOverModal();
+      resetGame();
     }
   });
 }
@@ -981,6 +1161,16 @@ function bindSubmitConfirmModal(): void {
     ) {
       closeSubmitConfirmModal();
     }
+  });
+}
+
+function bindSessionRestoreModal(): void {
+  dom.sessionRestoreContinueBtn.addEventListener("click", () => {
+    void confirmSessionRestoreContinue();
+  });
+
+  dom.sessionRestoreResetBtn.addEventListener("click", () => {
+    void confirmSessionRestoreReset();
   });
 }
 
@@ -1772,7 +1962,6 @@ function closeGameOverModal(): void {
   savingGameOver = false;
   pendingGameOverPayload = null;
   pendingGameOverSkillUsage = [];
-  activeDailyChallengeKey = null;
   dom.gameOverSaveBtn.disabled = false;
   dom.gameOverSkipBtn.hidden = false;
   dom.gameOverSkipBtn.disabled = false;
@@ -1817,11 +2006,19 @@ async function saveGameOverScore(): Promise<void> {
     date: new Date().toISOString(),
     skillUsage: cloneSkillUsageList(pendingGameOverSkillUsage),
   };
-  await scoreboardStore.addPersonal(entry);
+  let runReplayProof: DailyReplayProof | null = null;
+  try {
+    runReplayProof = buildRunReplayProof(entry);
+  } catch (error) {
+    console.warn("Missing replay proof for this run. Global submission will be unavailable.", error);
+  }
+
+  const personalEntry = runReplayProof ? { ...entry, replayProof: runReplayProof } : entry;
+  await scoreboardStore.addPersonal(personalEntry);
   const best = loadDeviceBestEntry();
-  const isDeviceBest = isBetterThanBest(entry, best);
-  if (isDeviceBest) {
-    saveDeviceBestEntry(entry);
+  const isDeviceBest = runReplayProof ? isBetterThanBest(personalEntry, best) : false;
+  if (isDeviceBest && personalEntry.replayProof) {
+    saveDeviceBestEntry(personalEntry);
   }
 
   try {
@@ -1829,21 +2026,40 @@ async function saveGameOverScore(): Promise<void> {
     let shouldSubmitGlobalFromDaily = false;
     if (gameMode === "daily") {
       const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
-      const dailyResult = await scoreboardStore.addDaily(challengeKey, entry);
+      const attemptToken = activeDailyAttemptToken;
+      if (!attemptToken) {
+        throw new Error("Missing Daily attempt token. Start a new Daily Challenge.");
+      }
+      if (!runReplayProof) {
+        throw new Error("Missing replay proof for Daily Challenge.");
+      }
+      const dailyResult = await scoreboardStore.addDaily(
+        challengeKey,
+        attemptToken,
+        entry,
+        runReplayProof,
+      );
       setDailyChallengeStatus(toDailyChallengeStatus(dailyResult));
       await refreshDailyBadgeStatus(dailyResult.challengeKey);
       if (!dailyResult.accepted) {
         throw new Error(
-          `Daily Challenge limit reached (${dailyResult.attemptsUsed}/${dailyResult.maxAttempts}).`,
+          `Daily submission was rejected (${dailyResult.attemptsUsed}/${dailyResult.maxAttempts} attempts used).`,
         );
       }
+      activeDailyAttemptToken = null;
       shouldSubmitGlobalFromDaily = dailyResult.improved;
     }
     if (shouldSubmitGlobalFromDaily) {
-      await submitEntryToGlobalAndRefresh(entry);
+      if (!runReplayProof) {
+        throw new Error("Missing replay proof for global sync.");
+      }
+      await submitEntryToGlobalAndRefresh(entry, runReplayProof);
       shouldRefreshGlobal = true;
     } else if (dom.gameOverSubmitDbEl.checked && isDeviceBest) {
-      await submitEntryToGlobalAndRefresh(entry);
+      if (!runReplayProof) {
+        throw new Error("Missing replay proof for global submission.");
+      }
+      await submitEntryToGlobalAndRefresh(entry, runReplayProof);
       shouldRefreshGlobal = true;
     }
     if (
@@ -1857,7 +2073,13 @@ async function saveGameOverScore(): Promise<void> {
     game.reset();
     canResume = false;
     currentRunSkillUsage = [];
+    currentRunReplaySeed = null;
+    currentRunReplayInputs = [];
+    currentRunReplayDifficulty = null;
+    activeDailyChallengeKey = null;
+    activeDailyAttemptToken = null;
     setStatus("Paused");
+    clearSessionSnapshot();
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to submit score.";
     dom.gameOverBestHintEl.className = "gameover-hint warn";
@@ -1905,21 +2127,30 @@ async function refreshGlobalTop10Data(): Promise<void> {
 
 function setDailyChallengeStatus(status: DailyChallengeStatus | null): void {
   dailyChallengeStatus = status;
+  if (status && !status.hasActiveAttempt) {
+    activeDailyAttemptToken = null;
+  }
   syncGameModeUi();
 }
 
-function toDailyChallengeStatus(result: DailyChallengeSubmitResult): DailyChallengeStatus {
+function toDailyChallengeStatus(
+  result: DailyChallengeStatus | DailyChallengeSubmitResult | DailyAttemptStartResult | DailyAttemptForfeitResult,
+): DailyChallengeStatus {
   return {
     challengeKey: result.challengeKey,
     attemptsUsed: result.attemptsUsed,
     attemptsLeft: result.attemptsLeft,
     maxAttempts: result.maxAttempts,
     canSubmit: result.canSubmit,
+    hasActiveAttempt: result.hasActiveAttempt === true,
   };
 }
 
-async function submitEntryToGlobalAndRefresh(entry: ScoreEntry): Promise<void> {
-  await scoreboardStore.add(entry);
+async function submitEntryToGlobalAndRefresh(
+  entry: ScoreEntry,
+  replayProof: DailyReplayProof,
+): Promise<void> {
+  await scoreboardStore.add(entry, replayProof);
   await refreshGlobalTop10Data();
 }
 
@@ -1945,26 +2176,34 @@ async function openSubmitConfirmModal(): Promise<void> {
   collapseExpandedScoreRow();
 
   pendingSubmitEntry = null;
+  pendingSubmitReplayProof = null;
   preparingPersonalSubmit = true;
   dom.submitConfirmConfirmBtn.disabled = true;
   dom.submitConfirmConfirmBtn.textContent = "Submit";
   dom.submitConfirmCancelBtn.disabled = false;
-  dom.submitConfirmMessageEl.textContent = "Checking your personal best record...";
+  dom.submitConfirmMessageEl.textContent = "Checking your device best record...";
   dom.submitConfirmModalEl.classList.remove("hidden");
   dom.submitConfirmCancelBtn.focus();
 
   try {
-    const [bestPersonal] = await scoreboardStore.topPersonal(1);
+    const bestPersonal = loadDeviceBestEntry();
     if (!isSubmitConfirmModalOpen()) {
       return;
     }
 
     if (!bestPersonal) {
-      dom.submitConfirmMessageEl.textContent = "No personal record available to submit.";
+      dom.submitConfirmMessageEl.textContent = "No device best record available to submit.";
+      return;
+    }
+
+    if (!bestPersonal.replayProof) {
+      dom.submitConfirmMessageEl.textContent =
+        "This device best record was saved before replay verification. Play a new run to submit.";
       return;
     }
 
     pendingSubmitEntry = bestPersonal;
+    pendingSubmitReplayProof = bestPersonal.replayProof;
     dom.submitConfirmMessageEl.textContent =
       `Submit this record to GLOBAL TOP 10?\n${bestPersonal.user} · ${bestPersonal.score} pts · Lv.${bestPersonal.level}`;
     dom.submitConfirmConfirmBtn.disabled = false;
@@ -1985,6 +2224,11 @@ async function confirmSubmitPersonalBest(): Promise<void> {
     closeSubmitConfirmModal();
     return;
   }
+  if (!pendingSubmitReplayProof) {
+    dom.submitConfirmMessageEl.textContent =
+      "Missing replay proof for this record. Play a new run and try again.";
+    return;
+  }
 
   submittingPersonalBest = true;
   dom.submitConfirmConfirmBtn.disabled = true;
@@ -1994,7 +2238,7 @@ async function confirmSubmitPersonalBest(): Promise<void> {
   dom.submitPersonalBtn.textContent = "Submitting";
 
   try {
-    await submitEntryToGlobalAndRefresh(pendingSubmitEntry);
+    await submitEntryToGlobalAndRefresh(pendingSubmitEntry, pendingSubmitReplayProof);
     dom.submitPersonalBtn.textContent = "Submitted";
     closeSubmitConfirmModal(true);
   } catch (error) {
@@ -2019,6 +2263,7 @@ function closeSubmitConfirmModal(force = false): void {
     return;
   }
   pendingSubmitEntry = null;
+  pendingSubmitReplayProof = null;
   preparingPersonalSubmit = false;
   dom.submitConfirmModalEl.classList.add("hidden");
   dom.submitConfirmConfirmBtn.disabled = true;
@@ -2187,6 +2432,106 @@ function cloneSkillUsageList(usages: ReadonlyArray<SkillUsageEntry>): SkillUsage
   }));
 }
 
+function cloneReplayInputs(
+  events: ReadonlyArray<ReplayInputEvent>,
+): ReplayInputEvent[] {
+  return events.map((event) => ({
+    time: event.time,
+    move: event.move,
+  }));
+}
+
+function normalizeReplayInputs(
+  raw: unknown,
+): ReplayInputEvent[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+
+  const normalized: ReplayInputEvent[] = [];
+  let lastTime = -1;
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object") {
+      continue;
+    }
+    const record = entry as Record<string, unknown>;
+    const move = record.move;
+    const time = record.time;
+    if (!isReplayMove(move) || typeof time !== "number" || !Number.isFinite(time)) {
+      continue;
+    }
+    const normalizedTime = Math.max(0, Math.trunc(time));
+    if (normalizedTime < lastTime) {
+      continue;
+    }
+    normalized.push({
+      time: normalizedTime,
+      move,
+    });
+    lastTime = normalizedTime;
+    if (normalized.length >= MAX_DAILY_REPLAY_INPUTS) {
+      break;
+    }
+  }
+  return normalized;
+}
+
+function normalizeReplaySeed(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) {
+    return null;
+  }
+  return Math.trunc(raw) >>> 0;
+}
+
+function normalizeReplayDifficulty(raw: unknown): Difficulty | null {
+  if (raw === 1 || raw === 2 || raw === 3) {
+    return raw;
+  }
+  return null;
+}
+
+function resolveSnapshotReplaySeed(snapshot: PersistedSessionSnapshot): number | null {
+  const raw = typeof snapshot.currentRunReplaySeed !== "undefined"
+    ? snapshot.currentRunReplaySeed
+    : snapshot.currentDailyReplaySeed;
+  return normalizeReplaySeed(raw);
+}
+
+function resolveSnapshotReplayInputs(snapshot: PersistedSessionSnapshot): ReplayInputEvent[] {
+  const raw = typeof snapshot.currentRunReplayInputs !== "undefined"
+    ? snapshot.currentRunReplayInputs
+    : snapshot.currentDailyReplayInputs;
+  return normalizeReplayInputs(raw);
+}
+
+function resolveSnapshotReplayDifficulty(snapshot: PersistedSessionSnapshot): Difficulty | null {
+  if (typeof snapshot.currentRunReplayDifficulty !== "undefined") {
+    return normalizeReplayDifficulty(snapshot.currentRunReplayDifficulty);
+  }
+  return normalizeReplayDifficulty(snapshot.gameState?.difficulty);
+}
+
+function isReplayMove(value: unknown): value is ReplayMove {
+  return value === "left" || value === "right" || value === "up" || value === "down";
+}
+
+function buildRunReplayProof(entry: ScoreEntry): DailyReplayProof {
+  if (currentRunReplaySeed === null) {
+    throw new Error("Missing replay seed for current run.");
+  }
+  const replayDifficulty = currentRunReplayDifficulty ?? 1;
+  const snapshot = latestSnapshot ?? game.exportState();
+  return {
+    version: 1,
+    difficulty: replayDifficulty,
+    seed: currentRunReplaySeed >>> 0,
+    finalTime: Math.max(0, Math.trunc(snapshot.time)),
+    finalScore: Math.max(0, Math.trunc(entry.score)),
+    finalLevel: Math.max(0, Math.trunc(entry.level)),
+    inputs: cloneReplayInputs(currentRunReplayInputs),
+  };
+}
+
 function cloneScoreEntry(entry: ScoreEntry): ScoreEntry {
   return {
     user: entry.user,
@@ -2195,6 +2540,15 @@ function cloneScoreEntry(entry: ScoreEntry): ScoreEntry {
     date: entry.date,
     skillUsage: cloneSkillUsageList(entry.skillUsage),
     isMe: entry.isMe === true,
+    replayProof: entry.replayProof ? {
+      version: 1,
+      difficulty: entry.replayProof.difficulty,
+      seed: entry.replayProof.seed,
+      finalTime: entry.replayProof.finalTime,
+      finalScore: entry.replayProof.finalScore,
+      finalLevel: entry.replayProof.finalLevel,
+      inputs: cloneReplayInputs(entry.replayProof.inputs),
+    } : undefined,
   };
 }
 
@@ -2230,6 +2584,15 @@ function hashStringToSeed(value: string): number {
   return hash >>> 0;
 }
 
+function createReplaySeed(): number {
+  if (typeof window.crypto?.getRandomValues === "function") {
+    const buffer = new Uint32Array(1);
+    window.crypto.getRandomValues(buffer);
+    return buffer[0] >>> 0;
+  }
+  return Math.trunc(Math.random() * 4294967296) >>> 0;
+}
+
 function loadGameModePreference(): GameMode {
   try {
     return window.localStorage.getItem(GAME_MODE_STORAGE_KEY) === "daily"
@@ -2246,6 +2609,291 @@ function saveGameModePreference(mode: GameMode): void {
   } catch {
     // Ignore storage errors and continue with current mode.
   }
+}
+
+function startSessionAutosave(): void {
+  if (sessionAutosaveTimer !== null) {
+    window.clearInterval(sessionAutosaveTimer);
+  }
+  sessionAutosaveTimer = window.setInterval(() => {
+    saveSessionSnapshot();
+  }, SESSION_AUTOSAVE_INTERVAL_MS);
+}
+
+function stopSessionAutosave(): void {
+  if (sessionAutosaveTimer === null) {
+    return;
+  }
+  window.clearInterval(sessionAutosaveTimer);
+  sessionAutosaveTimer = null;
+}
+
+function saveSessionSnapshot(force = false): void {
+  if (restoringSessionSnapshot || pendingSessionRestoreSnapshot) {
+    return;
+  }
+  if (!canResume || pendingGameOverPayload) {
+    clearSessionSnapshot();
+    return;
+  }
+
+  const gameState = game.exportState();
+  if (!hasRecoverableGameState(gameState)) {
+    clearSessionSnapshot();
+    return;
+  }
+  if (
+    gameMode === "daily" &&
+    (!activeDailyChallengeKey || !activeDailyAttemptToken || currentRunReplaySeed === null)
+  ) {
+    clearSessionSnapshot();
+    return;
+  }
+
+  const snapshot: PersistedSessionSnapshot = {
+    version: 1,
+    savedAt: Date.now(),
+    gameMode,
+    activeDailyChallengeKey: activeDailyChallengeKey,
+    activeDailyAttemptToken: activeDailyAttemptToken,
+    canResume,
+    autoHorizontalDirection,
+    currentRunSkillUsage: cloneSkillUsageList(currentRunSkillUsage),
+    currentRunReplaySeed,
+    currentRunReplayInputs: cloneReplayInputs(currentRunReplayInputs),
+    currentRunReplayDifficulty,
+    gameState,
+  };
+  const payload = JSON.stringify(snapshot);
+  if (!force && payload === lastSessionSnapshotPayload) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(SESSION_SNAPSHOT_STORAGE_KEY, payload);
+    lastSessionSnapshotPayload = payload;
+  } catch {
+    // Ignore storage errors and continue gameplay.
+  }
+}
+
+function clearSessionSnapshot(): void {
+  lastSessionSnapshotPayload = "";
+  try {
+    window.localStorage.removeItem(SESSION_SNAPSHOT_STORAGE_KEY);
+  } catch {
+    // Ignore storage errors and continue gameplay.
+  }
+}
+
+function promptSessionRestoreIfAvailable(): void {
+  const snapshot = loadSessionSnapshot();
+  if (!snapshot) {
+    return;
+  }
+  if (!snapshot.canResume || !hasRecoverableGameState(snapshot.gameState)) {
+    clearSessionSnapshot();
+    return;
+  }
+
+  if (snapshot.gameMode === "daily") {
+    const todayKey = getCurrentDailyChallenge().key;
+    if (
+      snapshot.activeDailyChallengeKey !== todayKey ||
+      !snapshot.activeDailyAttemptToken ||
+      resolveSnapshotReplaySeed(snapshot) === null
+    ) {
+      clearSessionSnapshot();
+      return;
+    }
+  }
+
+  pendingSessionRestoreSnapshot = snapshot;
+  openSessionRestoreModal(snapshot);
+}
+
+async function confirmSessionRestoreContinue(): Promise<void> {
+  const snapshot = pendingSessionRestoreSnapshot;
+  if (!snapshot) {
+    return;
+  }
+  pendingSessionRestoreSnapshot = null;
+  closeSessionRestoreModal();
+  applySessionSnapshot(snapshot);
+}
+
+async function confirmSessionRestoreReset(): Promise<void> {
+  const snapshot = pendingSessionRestoreSnapshot;
+  pendingSessionRestoreSnapshot = null;
+  closeSessionRestoreModal();
+  if (!snapshot) {
+    return;
+  }
+
+  const todayKey = getCurrentDailyChallenge().key;
+  if (
+    snapshot.gameMode === "daily" &&
+    snapshot.activeDailyChallengeKey === todayKey &&
+    snapshot.activeDailyChallengeKey &&
+    snapshot.activeDailyAttemptToken
+  ) {
+    try {
+      const result = await scoreboardStore.forfeitDailyAttempt(
+        snapshot.activeDailyChallengeKey,
+        snapshot.activeDailyAttemptToken,
+      );
+      setDailyChallengeStatus(toDailyChallengeStatus(result));
+      await refreshDailyBadgeStatus(snapshot.activeDailyChallengeKey);
+    } catch (error) {
+      console.warn("Failed to forfeit pending daily attempt from recovery snapshot.", error);
+    }
+  }
+  clearSessionSnapshot();
+}
+
+function applySessionSnapshot(snapshot: PersistedSessionSnapshot): void {
+  if (snapshot.gameMode === "daily") {
+    gameMode = "daily";
+    scoreboardView = "daily";
+  } else {
+    gameMode = "classic";
+    if (scoreboardView === "daily") {
+      scoreboardView = nonDailyScoreboardView;
+    }
+  }
+
+  restoringSessionSnapshot = true;
+  const imported = game.importState(snapshot.gameState);
+  restoringSessionSnapshot = false;
+  if (!imported) {
+    clearSessionSnapshot();
+    return;
+  }
+
+  if (snapshot.gameState.gameOn) {
+    game.pause();
+  }
+  canResume = true;
+  activeDailyChallengeKey = snapshot.gameMode === "daily"
+    ? snapshot.activeDailyChallengeKey
+    : null;
+  activeDailyAttemptToken = snapshot.gameMode === "daily"
+    ? snapshot.activeDailyAttemptToken
+    : null;
+  autoHorizontalDirection = snapshot.autoHorizontalDirection;
+  currentRunSkillUsage = normalizeSkillUsage(snapshot.currentRunSkillUsage);
+  currentRunReplaySeed = resolveSnapshotReplaySeed(snapshot);
+  currentRunReplayInputs = resolveSnapshotReplayInputs(snapshot);
+  currentRunReplayDifficulty = resolveSnapshotReplayDifficulty(snapshot);
+  pendingGameOverPayload = null;
+  pendingGameOverSkillUsage = [];
+  setStatus("Paused");
+  saveGameModePreference(gameMode);
+  syncGameModeUi();
+  syncScoreboardViewUi();
+  if (gameMode === "daily" && activeDailyChallengeKey) {
+    void refreshDailyChallengeStatus(activeDailyChallengeKey);
+    void refreshDailyBadgeStatus(activeDailyChallengeKey);
+  }
+  saveSessionSnapshot(true);
+}
+
+function openSessionRestoreModal(snapshot: PersistedSessionSnapshot): void {
+  dom.sessionRestoreMessageEl.textContent = formatSessionRestoreMessage(snapshot);
+  dom.sessionRestoreModalEl.classList.remove("hidden");
+  dom.sessionRestoreContinueBtn.focus();
+}
+
+function closeSessionRestoreModal(): void {
+  dom.sessionRestoreModalEl.classList.add("hidden");
+}
+
+function isSessionRestoreModalOpen(): boolean {
+  return !dom.sessionRestoreModalEl.classList.contains("hidden");
+}
+
+function formatSessionRestoreMessage(snapshot: PersistedSessionSnapshot): string {
+  const savedAt = new Date(snapshot.savedAt);
+  const savedAtLabel = Number.isNaN(savedAt.getTime())
+    ? "-"
+    : savedAt.toLocaleString();
+  const modeLabel = snapshot.gameMode === "daily" ? "Daily Challenge" : "Classic";
+  return `A ${modeLabel} run from ${savedAtLabel} was found. Continue from that state?`;
+}
+
+function loadSessionSnapshot(): PersistedSessionSnapshot | null {
+  try {
+    const raw = window.localStorage.getItem(SESSION_SNAPSHOT_STORAGE_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isPersistedSessionSnapshot(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function isPersistedSessionSnapshot(raw: unknown): raw is PersistedSessionSnapshot {
+  if (!raw || typeof raw !== "object") {
+    return false;
+  }
+  const candidate = raw as Record<string, unknown>;
+  const replaySeedCurrentValid = (
+    typeof candidate.currentRunReplaySeed === "undefined" ||
+    typeof candidate.currentRunReplaySeed === "number" ||
+    candidate.currentRunReplaySeed === null
+  );
+  const replaySeedLegacyValid = (
+    typeof candidate.currentDailyReplaySeed === "undefined" ||
+    typeof candidate.currentDailyReplaySeed === "number" ||
+    candidate.currentDailyReplaySeed === null
+  );
+  const replaySeedValid = replaySeedCurrentValid && replaySeedLegacyValid;
+  const replayInputsCurrentValid = (
+    typeof candidate.currentRunReplayInputs === "undefined" ||
+    Array.isArray(candidate.currentRunReplayInputs)
+  );
+  const replayInputsLegacyValid = (
+    typeof candidate.currentDailyReplayInputs === "undefined" ||
+    Array.isArray(candidate.currentDailyReplayInputs)
+  );
+  const replayInputsValid = replayInputsCurrentValid && replayInputsLegacyValid;
+  const replayDifficultyValid = (
+    typeof candidate.currentRunReplayDifficulty === "undefined" ||
+    typeof candidate.currentRunReplayDifficulty === "number" ||
+    candidate.currentRunReplayDifficulty === null
+  );
+  return (
+    candidate.version === 1 &&
+    typeof candidate.savedAt === "number" &&
+    (candidate.gameMode === "classic" || candidate.gameMode === "daily") &&
+    (typeof candidate.activeDailyChallengeKey === "string" || candidate.activeDailyChallengeKey === null) &&
+    (typeof candidate.activeDailyAttemptToken === "string" || candidate.activeDailyAttemptToken === null) &&
+    typeof candidate.canResume === "boolean" &&
+    (candidate.autoHorizontalDirection === "left" || candidate.autoHorizontalDirection === "right") &&
+    Array.isArray(candidate.currentRunSkillUsage) &&
+    replaySeedValid &&
+    replayInputsValid &&
+    replayDifficultyValid &&
+    !!candidate.gameState
+  );
+}
+
+function hasRecoverableGameState(gameState: PersistedGameState): boolean {
+  if (gameState.score > 0 || gameState.level > 0 || gameState.time > 0) {
+    return true;
+  }
+  if (gameState.numToriInPole > 0) {
+    return true;
+  }
+  if (gameState.numTori.some((count) => count > 0)) {
+    return true;
+  }
+  return gameState.flyingTori.some((entry) => entry !== null);
 }
 
 function loadLastUser(): string {
@@ -2309,19 +2957,73 @@ function loadDeviceBestEntry(): ScoreEntry | null {
     ) {
       return null;
     }
+    const replayProof = normalizeStoredReplayProof(candidate.replayProof);
+    if (!replayProof) {
+      try {
+        window.localStorage.removeItem(DEVICE_BEST_STORAGE_KEY);
+      } catch {
+        // Ignore storage cleanup errors.
+      }
+      return null;
+    }
     return {
       user: candidate.user,
       score: candidate.score,
       level: candidate.level,
       date: candidate.date,
       skillUsage: normalizeSkillUsage(candidate.skillUsage),
+      replayProof,
     };
   } catch {
     return null;
   }
 }
 
+function normalizeStoredReplayProof(raw: unknown): DailyReplayProof | undefined {
+  if (!raw || typeof raw !== "object") {
+    return undefined;
+  }
+  const record = raw as Record<string, unknown>;
+  const version = record.version;
+  const difficulty = record.difficulty;
+  const seed = record.seed;
+  const finalTime = record.finalTime;
+  const finalScore = record.finalScore;
+  const finalLevel = record.finalLevel;
+  if (version !== 1) {
+    return undefined;
+  }
+  if (difficulty !== 1 && difficulty !== 2 && difficulty !== 3) {
+    return undefined;
+  }
+  if (
+    typeof seed !== "number" ||
+    !Number.isFinite(seed) ||
+    typeof finalTime !== "number" ||
+    !Number.isFinite(finalTime) ||
+    typeof finalScore !== "number" ||
+    !Number.isFinite(finalScore) ||
+    typeof finalLevel !== "number" ||
+    !Number.isFinite(finalLevel)
+  ) {
+    return undefined;
+  }
+  const inputs = normalizeReplayInputs(record.inputs);
+  return {
+    version: 1,
+    difficulty,
+    seed: Math.trunc(seed) >>> 0,
+    finalTime: Math.max(0, Math.trunc(finalTime)),
+    finalScore: Math.max(0, Math.trunc(finalScore)),
+    finalLevel: Math.max(0, Math.trunc(finalLevel)),
+    inputs,
+  };
+}
+
 function saveDeviceBestEntry(entry: ScoreEntry): void {
+  if (!entry.replayProof) {
+    return;
+  }
   try {
     window.localStorage.setItem(DEVICE_BEST_STORAGE_KEY, JSON.stringify(entry));
   } catch {
@@ -2352,8 +3054,17 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
       ? dailyChallengeStatus
       : null;
     dom.gameOverBestHintEl.textContent = status
-      ? `Daily Challenge submits automatically. Attempts left after this run: ${Math.max(0, status.attemptsLeft - 1)}. If this run becomes your Daily best, it also syncs to Global.`
+      ? `Daily Challenge submits automatically. Attempts left today: ${status.attemptsLeft}. If this run becomes your Daily best, it also syncs to Global.`
       : "Daily Challenge submits automatically. Daily best is also synced to Global.";
+    return;
+  }
+
+  if (currentRunReplaySeed === null) {
+    dom.gameOverSubmitDbEl.checked = false;
+    dom.gameOverSubmitDbEl.disabled = true;
+    dom.gameOverBestHintEl.className = "gameover-hint warn";
+    dom.gameOverBestHintEl.textContent =
+      "Replay data is missing for this run, so GLOBAL submission is disabled.";
     return;
   }
 
@@ -2388,6 +3099,21 @@ async function maybeCheckForUpdatesOnLaunch(): Promise<void> {
   if (import.meta.env.DEV || !isTauri()) {
     return;
   }
+  hideUpdateNotice();
+
+  const isMac = isMacDesktopPlatform();
+  if (isMac && MIN_SUPPORTED_MAC_VERSION.length > 0) {
+    const currentVersion = await getCurrentAppVersionSafe();
+    if (currentVersion && compareAppVersions(currentVersion, MIN_SUPPORTED_MAC_VERSION) < 0) {
+      showUpdateNotice(
+        `Update required: v${MIN_SUPPORTED_MAC_VERSION}+ (current v${currentVersion})`,
+        MAC_APP_STORE_URL,
+        true,
+      );
+      return;
+    }
+  }
+
   if (!shouldCheckForUpdatesNow()) {
     return;
   }
@@ -2398,6 +3124,14 @@ async function maybeCheckForUpdatesOnLaunch(): Promise<void> {
   try {
     update = await check();
     if (!update) {
+      return;
+    }
+
+    if (isMac) {
+      showUpdateNotice(
+        `New version v${update.version} is available (current v${update.currentVersion}).`,
+        MAC_APP_STORE_URL,
+      );
       return;
     }
 
@@ -2445,5 +3179,84 @@ function markUpdateCheckTimestamp(): void {
     window.localStorage.setItem(LAST_UPDATE_CHECK_STORAGE_KEY, String(Date.now()));
   } catch {
     // Ignore storage errors and continue update checks.
+  }
+}
+
+async function getCurrentAppVersionSafe(): Promise<string | null> {
+  try {
+    return await getVersion();
+  } catch (error) {
+    console.warn("Failed to read current app version.", error);
+    return null;
+  }
+}
+
+function isMacDesktopPlatform(): boolean {
+  const platform = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  return platform.toLowerCase().includes("mac");
+}
+
+function compareAppVersions(left: string, right: string): number {
+  const leftParts = parseAppVersionParts(left);
+  const rightParts = parseAppVersionParts(right);
+  if (!leftParts || !rightParts) {
+    return 0;
+  }
+
+  const maxLength = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    const leftPart = leftParts[index] ?? 0;
+    const rightPart = rightParts[index] ?? 0;
+    if (leftPart !== rightPart) {
+      return leftPart < rightPart ? -1 : 1;
+    }
+  }
+  return 0;
+}
+
+function parseAppVersionParts(version: string): number[] | null {
+  const normalized = version.trim().replace(/^v/i, "").split("-")[0] ?? "";
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const parts = normalized.split(".");
+  const parsed: number[] = [];
+  for (const part of parts) {
+    if (!/^\d+$/.test(part)) {
+      return null;
+    }
+    const value = Number(part);
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    parsed.push(value);
+  }
+  return parsed;
+}
+
+function showUpdateNotice(message: string, downloadUrl: string, required = false): void {
+  updateNoticeDownloadUrl = downloadUrl;
+  dom.updateNoticeMessageEl.textContent = message;
+  dom.updateNoticeEl.classList.toggle("required", required);
+  dom.updateNoticeEl.classList.remove("hidden");
+}
+
+function hideUpdateNotice(): void {
+  updateNoticeDownloadUrl = null;
+  dom.updateNoticeMessageEl.textContent = "";
+  dom.updateNoticeEl.classList.remove("required");
+  dom.updateNoticeEl.classList.add("hidden");
+}
+
+async function openUpdateNoticeDownload(): Promise<void> {
+  if (!updateNoticeDownloadUrl) {
+    return;
+  }
+  try {
+    await openUrl(updateNoticeDownloadUrl);
+  } catch (error) {
+    console.warn("Failed to open update download link.", error);
+    window.alert(`Open this link to update:\n${updateNoticeDownloadUrl}`);
   }
 }

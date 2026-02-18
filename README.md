@@ -95,7 +95,25 @@ If these are not set, online sync is disabled and scoreboard works in local-only
 1. Create a Supabase project.
 2. Open SQL Editor and run `/supabase/schema.sql`.
 3. Copy project URL and anon key into `.env`.
-4. Start the app and submit a score.
+4. Deploy Edge Function `/supabase/functions/verify-score`.
+5. Set function secret `SUPABASE_SERVICE_ROLE_KEY`.
+6. Start the app and submit a score.
+
+Example:
+
+```bash
+supabase functions deploy verify-score --no-verify-jwt
+supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
+```
+
+### Edge Function migration note
+
+- Edge Function names are immutable in practice. To "rename", deploy a new function name.
+- Recommended rollout:
+  1. Deploy `verify-score`
+  2. Release client versions that call `verify-score`
+  3. Keep `verify-daily-score` temporarily for older clients
+  4. Remove `verify-daily-score` after old versions are no longer active
 
 The schema includes:
 
@@ -107,13 +125,23 @@ The schema includes:
 - `scores.mode` (`text`: `classic` | `daily`)
 - `scores.challenge_key` (`text`: `classic` or `YYYY-MM-DD`)
 - `scores.attempts_used` (`integer`: daily only, `1..3`)
+- `scores.daily_has_submission` (`boolean`: daily ranking visibility)
+- `scores.active_attempt_token` (`text`: active daily attempt token)
 - `scores.created_at` (`timestamptz`)
 - `submit_daily_score(...)` RPC function (server-enforced daily attempts)
+- `verify-score` Edge Function (server replay verification for Global and Daily)
 
 RLS behavior:
 
-- Direct `insert/update` on `scores` (anon client) is limited to `classic` rows only.
-- Daily writes are allowed only through `submit_daily_score(...)` RPC.
+- Direct `insert/update` on `scores` from anon/authenticated clients is blocked.
+- Global/Daily writes are accepted only after Edge Function replay verification.
+- `submit_global_score(...)` and `submit_daily_score(...)` RPC execute permissions are restricted to `service_role`.
+
+### Secrets policy
+
+- It is safe and recommended to commit `/supabase/schema.sql` and `/supabase/functions/**`.
+- Never commit secrets (`SUPABASE_SERVICE_ROLE_KEY`, DB password, JWT secrets, private keys, `.env*` values).
+- Keep runtime secrets only in Supabase secrets / CI secrets / local untracked env files.
 
 Ranking query order is:
 
@@ -137,6 +165,8 @@ Default fetch size is top 10.
   - Uses `(mode='daily', challenge_key=UTC date, client_uuid)`.
   - Daily runs are auto-submitted (no opt-out).
   - Server RPC enforces maximum 3 attempts per UTC day.
+  - Client submits replay proof (seed + timed move log + final state).
+  - Supabase Edge Function re-simulates the run and rejects mismatched score/level/time.
   - `attempts_used` increments even when score does not improve.
   - When daily best improves, that run is also auto-submitted to classic Global (same best-upsert rule).
   - Daily streak badges are computed from successful Daily submissions (strict consecutive UTC days).
