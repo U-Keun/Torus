@@ -1,5 +1,6 @@
 import type { Difficulty, GameSnapshot, PoleEntry, TorusCell } from "../game";
 import type { ScoreEntry } from "../scoreboard";
+import { renderGlobalRankTrophyIcon } from "./badge-icons";
 import type { TorusDom } from "./layout";
 
 export type GameStatus = "Paused" | "Running" | "Game Over";
@@ -12,6 +13,12 @@ interface ColorSpec {
 interface ScoreboardRenderOptions {
   allowSkillImport?: boolean;
   showMeTag?: boolean;
+  showGlobalRankBadge?: boolean;
+  meBadge?: {
+    label: string;
+    title: string;
+    iconMarkup?: string;
+  };
 }
 
 export class TorusRenderer {
@@ -64,6 +71,8 @@ export class TorusRenderer {
   ): void {
     const allowSkillImport = options.allowSkillImport !== false;
     const showMeTag = options.showMeTag === true;
+    const showGlobalRankBadge = options.showGlobalRankBadge === true;
+    const meBadge = options.meBadge;
     if (entries.length === 0) {
       this.dom.scoreListEl.innerHTML = '<li class="empty-row">No records yet</li>';
       return;
@@ -76,6 +85,20 @@ export class TorusRenderer {
         const isExpanded = this.expandedScoreIndex === index;
         const meTag = showMeTag && row.isMe
           ? '<span class="score-me-tag" aria-label="My record">Me</span>'
+          : "";
+        const rankBadgeMarkup = showGlobalRankBadge && index < 3
+          ? `<span class="score-rank-badge rank-${index + 1}" title="Global Rank #${index + 1}" aria-label="Global Rank ${index + 1}">${renderGlobalRankTrophyIcon(index + 1)}</span>`
+          : "";
+        const meBadgeMarkup = (
+          showMeTag &&
+          row.isMe &&
+          meBadge
+        )
+          ? `<span class="score-me-badge" title="${escapeHtml(meBadge.title)}" aria-label="${escapeHtml(meBadge.title)}">${
+            meBadge.iconMarkup
+              ? meBadge.iconMarkup
+              : `<span class="score-me-badge-text">${escapeHtml(meBadge.label)}</span>`
+          }</span>`
           : "";
         const drawerBody = row.skillUsage.length === 0
           ? '<li class="empty">No skill information recorded.</li>'
@@ -110,7 +133,7 @@ export class TorusRenderer {
             })
             .join("");
         return `<li class="score-row${isExpanded ? " expanded" : ""}" data-score-index="${index}" role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}">
-          <span class="name-wrap"><span class="name" title="${escapeHtml(row.user)}">${escapeHtml(row.user)}</span>${meTag}</span>
+          <span class="name-wrap"><span class="name" title="${escapeHtml(row.user)}">${escapeHtml(row.user)}</span>${rankBadgeMarkup}${meTag}${meBadgeMarkup}</span>
           <span class="point">${row.score}</span>
           <span class="meta">Lv.${row.level} · ${date}${skillMark}</span>
           <div class="score-drawer">
