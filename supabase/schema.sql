@@ -165,6 +165,11 @@ begin
     v_skill_usage := '[]'::jsonb;
   end if;
 
+  -- Retain only today's Daily rows. Older Daily rows are not used by the app.
+  delete from public.scores
+  where mode = 'daily'
+    and challenge_key <> v_today_key;
+
   select id, score, level, attempts_used
   into v_existing_id, v_existing_score, v_existing_level, v_existing_attempts
   from public.scores
