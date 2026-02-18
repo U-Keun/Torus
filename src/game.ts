@@ -41,6 +41,30 @@ interface NewGameOptions {
   randomSeed?: number;
 }
 
+export interface PersistedGameState {
+  version: 1;
+  numCols: number;
+  poleHeight: number;
+  polePos: number;
+  box: (TorusCell | null)[][];
+  pole: PoleEntry[][];
+  flyingTori: (number | null)[];
+  flyingToriHeight: number[];
+  flyingToriWaiting: number[];
+  numTori: number[];
+  numToriInPole: number;
+  score: number;
+  level: number;
+  levelGauge: number;
+  time: number;
+  gameOn: boolean;
+  difficulty: Difficulty;
+  gameSpeedMs: number;
+  lastUser: string;
+  randomMode: "default" | "seeded";
+  randomSeedState: number;
+}
+
 export class TorusGame {
   private readonly gaugeTime = 20;
   private readonly flyingTorusSpeedFactor = 1;
@@ -71,6 +95,8 @@ export class TorusGame {
   private difficulty: Difficulty = 1;
   private gameSpeedMs = 100;
   private lastUser = "";
+  private randomMode: "default" | "seeded" = "default";
+  private randomSeedState = 0;
   private randomFn: () => number = Math.random;
 
   constructor(
@@ -97,9 +123,11 @@ export class TorusGame {
 
   public startNewGame(difficulty: Difficulty, options: NewGameOptions = {}): void {
     this.setDifficulty(difficulty);
-    this.randomFn = typeof options.randomSeed === "number"
-      ? createSeededRandom(options.randomSeed)
-      : Math.random;
+    if (typeof options.randomSeed === "number") {
+      this.configureSeededRandom(options.randomSeed >>> 0);
+    } else {
+      this.configureDefaultRandom();
+    }
     this.resetState();
     this.gameOn = true;
     this.startTimer();
@@ -177,6 +205,72 @@ export class TorusGame {
     this.lastUser = user;
   }
 
+  public exportState(): PersistedGameState {
+    return {
+      version: 1,
+      numCols: this.numCols,
+      poleHeight: this.poleHeight,
+      polePos: this.polePos,
+      box: this.box.map((row) => row.map((entry) => this.cloneTorus(entry))),
+      pole: this.pole.map((row) => row.map((entry) => this.clonePoleEntry(entry))),
+      flyingTori: [...this.flyingTori],
+      flyingToriHeight: [...this.flyingToriHeight],
+      flyingToriWaiting: [...this.flyingToriWaiting],
+      numTori: [...this.numTori],
+      numToriInPole: this.numToriInPole,
+      score: this.score,
+      level: this.level,
+      levelGauge: this.levelGauge,
+      time: this.time,
+      gameOn: this.gameOn,
+      difficulty: this.difficulty,
+      gameSpeedMs: this.gameSpeedMs,
+      lastUser: this.lastUser,
+      randomMode: this.randomMode,
+      randomSeedState: this.randomSeedState >>> 0,
+    };
+  }
+
+  public importState(state: PersistedGameState): boolean {
+    if (!this.isPersistedState(state)) {
+      return false;
+    }
+
+    this.pauseInternal();
+
+    this.numCols = state.numCols;
+    this.poleHeight = state.poleHeight;
+    this.polePos = state.polePos;
+    this.box = state.box.map((row) => row.map((entry) => this.cloneTorus(entry)));
+    this.pole = state.pole.map((row) => row.map((entry) => this.clonePoleEntry(entry)));
+    this.flyingTori = [...state.flyingTori];
+    this.flyingToriHeight = [...state.flyingToriHeight];
+    this.flyingToriWaiting = [...state.flyingToriWaiting];
+    this.numTori = [...state.numTori];
+    this.numToriInPole = state.numToriInPole;
+    this.score = state.score;
+    this.level = state.level;
+    this.levelGauge = state.levelGauge;
+    this.time = state.time;
+    this.difficulty = state.difficulty;
+    this.gameSpeedMs = state.gameSpeedMs;
+    this.lastUser = state.lastUser;
+    this.gameOn = state.gameOn;
+
+    if (state.randomMode === "seeded") {
+      this.configureSeededRandom(state.randomSeedState >>> 0);
+    } else {
+      this.configureDefaultRandom();
+    }
+
+    if (this.gameOn) {
+      this.startTimer();
+    }
+
+    this.emitRender();
+    return true;
+  }
+
   private resetState(): void {
     this.numCols = 3;
     this.poleHeight = this.numCols;
@@ -198,6 +292,138 @@ export class TorusGame {
     this.gameOn = false;
 
     this.initPole(0);
+  }
+
+  private configureDefaultRandom(): void {
+    this.randomMode = "default";
+    this.randomSeedState = 0;
+    this.randomFn = Math.random;
+  }
+
+  private configureSeededRandom(seed: number): void {
+    this.randomMode = "seeded";
+    this.randomSeedState = seed >>> 0;
+    this.randomFn = () => this.nextSeededRandom();
+  }
+
+  private nextSeededRandom(): number {
+    this.randomSeedState = (this.randomSeedState + 0x6d2b79f5) >>> 0;
+    let value = Math.imul(this.randomSeedState ^ (this.randomSeedState >>> 15), 1 | this.randomSeedState);
+    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
+    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
+  }
+
+  private isPersistedState(state: PersistedGameState): boolean {
+    if (state.version !== 1) {
+      return false;
+    }
+    if (![1, 2, 3].includes(state.difficulty)) {
+      return false;
+    }
+    if (state.randomMode !== "default" && state.randomMode !== "seeded") {
+      return false;
+    }
+    if (!Number.isInteger(state.numCols) || state.numCols < 3 || state.numCols > 128) {
+      return false;
+    }
+    if (!Number.isInteger(state.poleHeight) || state.poleHeight < 1 || state.poleHeight > state.numCols) {
+      return false;
+    }
+    if (!Number.isInteger(state.polePos) || state.polePos < 0 || state.polePos >= state.numCols) {
+      return false;
+    }
+    if (!Array.isArray(state.box) || state.box.length !== this.boxHeight) {
+      return false;
+    }
+    if (!Array.isArray(state.pole) || state.pole.length !== state.poleHeight) {
+      return false;
+    }
+    if (!Array.isArray(state.flyingTori) || state.flyingTori.length !== state.numCols) {
+      return false;
+    }
+    if (!Array.isArray(state.flyingToriHeight) || state.flyingToriHeight.length !== state.numCols) {
+      return false;
+    }
+    if (!Array.isArray(state.flyingToriWaiting) || state.flyingToriWaiting.length !== state.numCols) {
+      return false;
+    }
+    if (!Array.isArray(state.numTori) || state.numTori.length !== state.numCols) {
+      return false;
+    }
+
+    for (const row of state.box) {
+      if (!Array.isArray(row) || row.length !== state.numCols) {
+        return false;
+      }
+      for (const entry of row) {
+        if (entry === null) {
+          continue;
+        }
+        if (
+          typeof entry !== "object" ||
+          !Number.isFinite(entry.color) ||
+          !Number.isFinite(entry.angle)
+        ) {
+          return false;
+        }
+      }
+    }
+    for (const row of state.pole) {
+      if (!Array.isArray(row) || row.length !== state.numCols) {
+        return false;
+      }
+      for (const entry of row) {
+        if (entry === null || entry === "pole") {
+          continue;
+        }
+        if (
+          typeof entry !== "object" ||
+          !Number.isFinite(entry.color) ||
+          !Number.isFinite(entry.angle)
+        ) {
+          return false;
+        }
+      }
+    }
+    for (const value of state.flyingTori) {
+      if (value !== null && !Number.isFinite(value)) {
+        return false;
+      }
+    }
+    for (const value of state.flyingToriHeight) {
+      if (!Number.isFinite(value)) {
+        return false;
+      }
+    }
+    for (const value of state.flyingToriWaiting) {
+      if (!Number.isFinite(value)) {
+        return false;
+      }
+    }
+    for (const value of state.numTori) {
+      if (!Number.isFinite(value)) {
+        return false;
+      }
+    }
+    if (!Number.isInteger(state.numToriInPole) || state.numToriInPole < 0 || state.numToriInPole > state.poleHeight) {
+      return false;
+    }
+    if (!Number.isFinite(state.score) || !Number.isFinite(state.level) || !Number.isFinite(state.levelGauge) || !Number.isFinite(state.time)) {
+      return false;
+    }
+    if (typeof state.gameOn !== "boolean") {
+      return false;
+    }
+    if (!Number.isFinite(state.gameSpeedMs) || state.gameSpeedMs <= 0) {
+      return false;
+    }
+    if (typeof state.lastUser !== "string") {
+      return false;
+    }
+    if (!Number.isFinite(state.randomSeedState)) {
+      return false;
+    }
+    return true;
   }
 
   private make2d<T>(rows: number, cols: number, fill: T): T[][] {
@@ -705,14 +931,4 @@ export class TorusGame {
     this.pole = newPole;
     this.poleHeight = newHeight;
   }
-}
-
-function createSeededRandom(seed: number): () => number {
-  let state = seed >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let value = Math.imul(state ^ (state >>> 15), 1 | state);
-    value ^= value + Math.imul(value ^ (value >>> 7), 61 | value);
-    return ((value ^ (value >>> 14)) >>> 0) / 4294967296;
-  };
 }

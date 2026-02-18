@@ -20,7 +20,11 @@ const CLASSIC_MODE: &str = "classic";
 const DAILY_MODE: &str = "daily";
 const CLASSIC_CHALLENGE_KEY: &str = "classic";
 const DAILY_MAX_ATTEMPTS: i64 = 3;
-const DAILY_RPC_NAME: &str = "submit_daily_score";
+const DAILY_START_RPC_NAME: &str = "start_daily_attempt";
+const DAILY_FORFEIT_RPC_NAME: &str = "forfeit_daily_attempt";
+const VERIFY_SCORE_FUNCTION_NAME: &str = "verify-score";
+const MAX_DAILY_REPLAY_EVENTS: usize = 20_000;
+const MAX_DAILY_REPLAY_FINAL_TIME: i64 = 2_000_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillUsage {
@@ -58,18 +62,8 @@ struct ScoreRow {
 struct DailyAttemptsRow {
     #[serde(default)]
     attempts_used: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-struct SubmitScorePayload<'a> {
-    player_name: &'a str,
-    score: i64,
-    level: i64,
-    created_at: &'a str,
-    client_uuid: &'a str,
-    skill_usage: &'a [SkillUsage],
-    mode: &'a str,
-    challenge_key: &'a str,
+    #[serde(default)]
+    active_attempt_token: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,6 +84,29 @@ pub struct DailyStatus {
     max_attempts: i64,
     #[serde(rename = "canSubmit")]
     can_submit: bool,
+    #[serde(rename = "hasActiveAttempt")]
+    has_active_attempt: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DailyAttemptStartResult {
+    pub accepted: bool,
+    #[serde(default)]
+    pub resumed: bool,
+    #[serde(rename = "attemptToken", default)]
+    pub attempt_token: Option<String>,
+    #[serde(rename = "challengeKey")]
+    pub challenge_key: String,
+    #[serde(rename = "attemptsUsed")]
+    pub attempts_used: i64,
+    #[serde(rename = "attemptsLeft")]
+    pub attempts_left: i64,
+    #[serde(rename = "maxAttempts")]
+    pub max_attempts: i64,
+    #[serde(rename = "canSubmit")]
+    pub can_submit: bool,
+    #[serde(rename = "hasActiveAttempt", default)]
+    pub has_active_attempt: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -107,17 +124,74 @@ pub struct DailySubmitResult {
     pub max_attempts: i64,
     #[serde(rename = "canSubmit")]
     pub can_submit: bool,
+    #[serde(rename = "hasActiveAttempt", default)]
+    pub has_active_attempt: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct DailyForfeitResult {
+    pub accepted: bool,
+    #[serde(rename = "challengeKey")]
+    pub challenge_key: String,
+    #[serde(rename = "attemptsUsed")]
+    pub attempts_used: i64,
+    #[serde(rename = "attemptsLeft")]
+    pub attempts_left: i64,
+    #[serde(rename = "maxAttempts")]
+    pub max_attempts: i64,
+    #[serde(rename = "canSubmit")]
+    pub can_submit: bool,
+    #[serde(rename = "hasActiveAttempt", default)]
+    pub has_active_attempt: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReplayInputEvent {
+    pub time: i64,
+    #[serde(rename = "move")]
+    pub move_dir: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyReplayProof {
+    pub version: i64,
+    pub difficulty: i64,
+    pub seed: u32,
+    #[serde(rename = "finalTime")]
+    pub final_time: i64,
+    #[serde(rename = "finalScore")]
+    pub final_score: i64,
+    #[serde(rename = "finalLevel")]
+    pub final_level: i64,
+    pub inputs: Vec<ReplayInputEvent>,
 }
 
 #[derive(Debug, Serialize)]
-struct DailySubmitPayload<'a> {
+struct DailyStartPayload<'a> {
     p_client_uuid: &'a str,
     p_challenge_key: &'a str,
     p_player_name: &'a str,
-    p_score: i64,
-    p_level: i64,
-    p_created_at: &'a str,
-    p_skill_usage: &'a [SkillUsage],
+}
+
+#[derive(Debug, Serialize)]
+struct DailyForfeitPayload<'a> {
+    p_client_uuid: &'a str,
+    p_challenge_key: &'a str,
+    p_attempt_token: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct VerifyScorePayload<'a> {
+    mode: &'a str,
+    #[serde(rename = "challengeKey")]
+    challenge_key: &'a str,
+    #[serde(rename = "attemptToken", skip_serializing_if = "Option::is_none")]
+    attempt_token: Option<&'a str>,
+    #[serde(rename = "clientUuid")]
+    client_uuid: &'a str,
+    entry: &'a ScoreEntry,
+    #[serde(rename = "replayProof")]
+    replay_proof: &'a DailyReplayProof,
 }
 
 #[tauri::command]
@@ -161,11 +235,13 @@ pub async fn fetch_global_scores(
 pub async fn submit_global_score(
     app: AppHandle,
     entry: ScoreEntry,
+    replay_proof: DailyReplayProof,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
 ) -> Result<(), String> {
     let mut cache = read_cache(&app)?;
     let mut entry = sanitize_entry(entry)?;
+    let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
     let device_uuid = get_or_create_device_uuid(&app)?;
     entry.is_me = true;
     cache.push(entry.clone());
@@ -174,7 +250,9 @@ pub async fn submit_global_score(
     write_cache(&app, &cache)?;
 
     if let Some(config) = normalize_supabase_config(supabase_url, supabase_anon_key) {
-        if let Err(error) = upsert_remote_score(&config, &entry, &device_uuid).await {
+        if let Err(error) =
+            submit_remote_global_score(&config, &entry, &replay_proof, &device_uuid).await
+        {
             eprintln!("Failed to save score to Supabase. Score kept locally. {error}");
         }
     }
@@ -221,16 +299,36 @@ pub async fn fetch_daily_status(
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
-    let attempts_used =
+    let remote_status =
         fetch_remote_daily_attempts(&config, &normalized_challenge_key, &device_uuid).await?;
-    Ok(build_daily_status(&normalized_challenge_key, attempts_used))
+    Ok(build_daily_status(
+        &normalized_challenge_key,
+        remote_status.attempts_used,
+        remote_status.has_active_attempt,
+    ))
+}
+
+#[tauri::command]
+pub async fn start_daily_attempt(
+    app: AppHandle,
+    challenge_key: String,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<DailyAttemptStartResult, String> {
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let device_uuid = get_or_create_device_uuid(&app)?;
+    start_remote_daily_attempt(&config, &normalized_challenge_key, &device_uuid).await
 }
 
 #[tauri::command]
 pub async fn submit_daily_score(
     app: AppHandle,
     challenge_key: String,
+    attempt_token: String,
     entry: ScoreEntry,
+    replay_proof: DailyReplayProof,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
 ) -> Result<DailySubmitResult, String> {
@@ -238,8 +336,46 @@ pub async fn submit_daily_score(
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let entry = sanitize_entry(entry)?;
+    let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
     let device_uuid = get_or_create_device_uuid(&app)?;
-    submit_remote_daily_score(&config, &normalized_challenge_key, &entry, &device_uuid).await
+    let normalized_attempt_token = attempt_token.trim().to_string();
+    if normalized_attempt_token.is_empty() {
+        return Err("daily challenge attempt token is required".into());
+    }
+    submit_remote_daily_score(
+        &config,
+        &normalized_challenge_key,
+        &normalized_attempt_token,
+        &entry,
+        &replay_proof,
+        &device_uuid,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn forfeit_daily_attempt(
+    app: AppHandle,
+    challenge_key: String,
+    attempt_token: String,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<DailyForfeitResult, String> {
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let normalized_attempt_token = attempt_token.trim().to_string();
+    if normalized_attempt_token.is_empty() {
+        return Err("daily challenge attempt token is required".into());
+    }
+    let device_uuid = get_or_create_device_uuid(&app)?;
+    forfeit_remote_daily_attempt(
+        &config,
+        &normalized_challenge_key,
+        &normalized_attempt_token,
+        &device_uuid,
+    )
+    .await
 }
 
 fn normalize_limit(limit: Option<u32>) -> usize {
@@ -282,7 +418,16 @@ fn normalize_daily_challenge_key(raw: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-fn build_daily_status(challenge_key: &str, attempts_used: i64) -> DailyStatus {
+struct RemoteDailyAttemptStatus {
+    attempts_used: i64,
+    has_active_attempt: bool,
+}
+
+fn build_daily_status(
+    challenge_key: &str,
+    attempts_used: i64,
+    has_active_attempt: bool,
+) -> DailyStatus {
     let used = attempts_used.clamp(0, DAILY_MAX_ATTEMPTS);
     let left = DAILY_MAX_ATTEMPTS - used;
     DailyStatus {
@@ -291,6 +436,7 @@ fn build_daily_status(challenge_key: &str, attempts_used: i64) -> DailyStatus {
         attempts_left: left,
         max_attempts: DAILY_MAX_ATTEMPTS,
         can_submit: left > 0,
+        has_active_attempt,
     }
 }
 
@@ -353,6 +499,63 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
         date: entry.date.trim().to_string(),
         skill_usage,
         is_me: false,
+    })
+}
+
+fn sanitize_daily_replay_proof(proof: DailyReplayProof) -> Result<DailyReplayProof, String> {
+    if proof.version != 1 {
+        return Err("daily replay proof version is not supported".into());
+    }
+    if proof.difficulty != 1 && proof.difficulty != 2 && proof.difficulty != 3 {
+        return Err("daily replay proof difficulty is invalid".into());
+    }
+    if proof.final_time < 0 || proof.final_score < 0 || proof.final_level < 0 {
+        return Err("daily replay proof has invalid final values".into());
+    }
+    if proof.final_time > MAX_DAILY_REPLAY_FINAL_TIME {
+        return Err("daily replay proof final time exceeds limit".into());
+    }
+
+    let mut sanitized_inputs: Vec<ReplayInputEvent> = Vec::new();
+    let mut last_time = -1_i64;
+    for event in proof.inputs.into_iter().take(MAX_DAILY_REPLAY_EVENTS) {
+        if event.time < 0 {
+            return Err("daily replay input time cannot be negative".into());
+        }
+        if event.time < last_time {
+            return Err("daily replay input time order is invalid".into());
+        }
+        let normalized_move = event.move_dir.trim().to_ascii_lowercase();
+        match normalized_move.as_str() {
+            "left" | "right" | "up" | "down" => {
+                sanitized_inputs.push(ReplayInputEvent {
+                    time: event.time,
+                    move_dir: normalized_move,
+                });
+                last_time = event.time;
+            }
+            _ => {
+                return Err("daily replay input move is invalid".into());
+            }
+        }
+    }
+
+    if sanitized_inputs
+        .last()
+        .map(|event| event.time > proof.final_time)
+        .unwrap_or(false)
+    {
+        return Err("daily replay input exceeds final time".into());
+    }
+
+    Ok(DailyReplayProof {
+        version: 1,
+        difficulty: proof.difficulty,
+        seed: proof.seed,
+        final_time: proof.final_time,
+        final_score: proof.final_score,
+        final_level: proof.final_level,
+        inputs: sanitized_inputs,
     })
 }
 
@@ -517,146 +720,6 @@ async fn fetch_remote_scores(
         .collect())
 }
 
-async fn upsert_remote_score(
-    config: &SupabaseConfig,
-    entry: &ScoreEntry,
-    client_uuid: &str,
-) -> Result<(), String> {
-    if let Some(existing) = fetch_remote_score_by_uuid(config, client_uuid).await? {
-        if !is_better_score(entry, &existing) {
-            return Ok(());
-        }
-        return update_remote_score(config, entry, client_uuid).await;
-    }
-
-    insert_remote_score(config, entry, client_uuid).await
-}
-
-async fn fetch_remote_score_by_uuid(
-    config: &SupabaseConfig,
-    client_uuid: &str,
-) -> Result<Option<ScoreEntry>, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
-    let filter = format!("eq.{client_uuid}");
-    let client = create_http_client()?;
-    let response = client
-        .get(endpoint)
-        .query(&[
-            ("select", "player_name,score,level,created_at,skill_usage"),
-            ("client_uuid", filter.as_str()),
-            ("mode", "eq.classic"),
-            ("challenge_key", "eq.classic"),
-            ("limit", "1"),
-        ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
-        .send()
-        .await
-        .map_err(|error| format!("supabase select by uuid failed: {error}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!(
-            "supabase select by uuid failed with {status}: {body}"
-        ));
-    }
-
-    let rows = response
-        .json::<Vec<ScoreRow>>()
-        .await
-        .map_err(|error| format!("failed to decode supabase response: {error}"))?;
-
-    Ok(rows.into_iter().next().map(|row| ScoreEntry {
-        user: row.player_name,
-        score: row.score,
-        level: row.level,
-        date: row.created_at,
-        skill_usage: row.skill_usage.unwrap_or_default(),
-        is_me: true,
-    }))
-}
-
-async fn insert_remote_score(
-    config: &SupabaseConfig,
-    entry: &ScoreEntry,
-    client_uuid: &str,
-) -> Result<(), String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
-    let payload = SubmitScorePayload {
-        player_name: &entry.user,
-        score: entry.score,
-        level: entry.level,
-        created_at: &entry.date,
-        client_uuid,
-        skill_usage: &entry.skill_usage,
-        mode: CLASSIC_MODE,
-        challenge_key: CLASSIC_CHALLENGE_KEY,
-    };
-
-    let client = create_http_client()?;
-    let response = client
-        .post(endpoint)
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
-        .header("Prefer", "return=minimal")
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|error| format!("supabase insert failed: {error}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("supabase insert failed with {status}: {body}"));
-    }
-
-    Ok(())
-}
-
-async fn update_remote_score(
-    config: &SupabaseConfig,
-    entry: &ScoreEntry,
-    client_uuid: &str,
-) -> Result<(), String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
-    let filter = format!("eq.{client_uuid}");
-    let payload = SubmitScorePayload {
-        player_name: &entry.user,
-        score: entry.score,
-        level: entry.level,
-        created_at: &entry.date,
-        client_uuid,
-        skill_usage: &entry.skill_usage,
-        mode: CLASSIC_MODE,
-        challenge_key: CLASSIC_CHALLENGE_KEY,
-    };
-
-    let client = create_http_client()?;
-    let response = client
-        .patch(endpoint)
-        .query(&[
-            ("client_uuid", filter.as_str()),
-            ("mode", "eq.classic"),
-            ("challenge_key", "eq.classic"),
-        ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
-        .header("Prefer", "return=minimal")
-        .json(&payload)
-        .send()
-        .await
-        .map_err(|error| format!("supabase update failed: {error}"))?;
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("supabase update failed with {status}: {body}"));
-    }
-
-    Ok(())
-}
-
 async fn fetch_remote_daily_scores(
     config: &SupabaseConfig,
     challenge_key: &str,
@@ -676,6 +739,7 @@ async fn fetch_remote_daily_scores(
             ),
             ("mode", mode_filter.as_str()),
             ("challenge_key", challenge_filter.as_str()),
+            ("daily_has_submission", "eq.true"),
             ("order", "score.desc,level.desc,created_at.desc"),
             ("limit", &limit.to_string()),
         ])
@@ -720,7 +784,7 @@ async fn fetch_remote_daily_attempts(
     config: &SupabaseConfig,
     challenge_key: &str,
     client_uuid: &str,
-) -> Result<i64, String> {
+) -> Result<RemoteDailyAttemptStatus, String> {
     let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
     let challenge_filter = format!("eq.{challenge_key}");
@@ -729,7 +793,7 @@ async fn fetch_remote_daily_attempts(
     let response = client
         .get(endpoint)
         .query(&[
-            ("select", "attempts_used"),
+            ("select", "attempts_used,active_attempt_token"),
             ("mode", mode_filter.as_str()),
             ("challenge_key", challenge_filter.as_str()),
             ("client_uuid", uuid_filter.as_str()),
@@ -756,30 +820,34 @@ async fn fetch_remote_daily_attempts(
     let attempts = rows
         .into_iter()
         .next()
-        .and_then(|row| row.attempts_used)
-        .unwrap_or(0);
-    Ok(attempts.clamp(0, DAILY_MAX_ATTEMPTS))
+        .unwrap_or(DailyAttemptsRow {
+            attempts_used: Some(0),
+            active_attempt_token: None,
+        });
+    Ok(RemoteDailyAttemptStatus {
+        attempts_used: attempts.attempts_used.unwrap_or(0).clamp(0, DAILY_MAX_ATTEMPTS),
+        has_active_attempt: attempts
+            .active_attempt_token
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false),
+    })
 }
 
-async fn submit_remote_daily_score(
+async fn start_remote_daily_attempt(
     config: &SupabaseConfig,
     challenge_key: &str,
-    entry: &ScoreEntry,
     client_uuid: &str,
-) -> Result<DailySubmitResult, String> {
+) -> Result<DailyAttemptStartResult, String> {
     let endpoint = format!(
         "{}/rest/v1/rpc/{}",
         config.url.trim_end_matches('/'),
-        DAILY_RPC_NAME
+        DAILY_START_RPC_NAME
     );
-    let payload = DailySubmitPayload {
+    let payload = DailyStartPayload {
         p_client_uuid: client_uuid,
         p_challenge_key: challenge_key,
-        p_player_name: &entry.user,
-        p_score: entry.score,
-        p_level: entry.level,
-        p_created_at: &entry.date,
-        p_skill_usage: &entry.skill_usage,
+        p_player_name: "Pending",
     };
 
     let client = create_http_client()?;
@@ -790,21 +858,140 @@ async fn submit_remote_daily_score(
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("supabase daily submit failed: {error}"))?;
+        .map_err(|error| format!("supabase daily start failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "supabase daily submit failed with {status}: {body}\n\
-Ensure /supabase/schema.sql has been applied (including RPC {DAILY_RPC_NAME})."
+            "supabase daily start failed with {status}: {body}\n\
+Ensure /supabase/schema.sql has been applied (including RPC {DAILY_START_RPC_NAME})."
+        ));
+    }
+
+    let result = response
+        .json::<DailyAttemptStartResult>()
+        .await
+        .map_err(|error| format!("failed to decode daily start response: {error}"))?;
+
+    let token = result
+        .attempt_token
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+
+    let attempts_left = result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS);
+    Ok(DailyAttemptStartResult {
+        accepted: result.accepted,
+        resumed: result.resumed,
+        attempt_token: token,
+        challenge_key: challenge_key.to_string(),
+        attempts_used: result.attempts_used.clamp(0, DAILY_MAX_ATTEMPTS),
+        attempts_left,
+        max_attempts: DAILY_MAX_ATTEMPTS,
+        can_submit: attempts_left > 0,
+        has_active_attempt: result.has_active_attempt,
+    })
+}
+
+async fn submit_remote_global_score(
+    config: &SupabaseConfig,
+    entry: &ScoreEntry,
+    replay_proof: &DailyReplayProof,
+    client_uuid: &str,
+) -> Result<(), String> {
+    let endpoint = format!(
+        "{}/functions/v1/{}",
+        config.url.trim_end_matches('/'),
+        VERIFY_SCORE_FUNCTION_NAME
+    );
+    let payload = VerifyScorePayload {
+        mode: CLASSIC_MODE,
+        challenge_key: CLASSIC_CHALLENGE_KEY,
+        attempt_token: None,
+        client_uuid,
+        entry,
+        replay_proof,
+    };
+
+    let client = create_http_client()?;
+    let response = client
+        .post(endpoint)
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("supabase global replay verify failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let summary = summarize_daily_verify_error_body(&body);
+        let hint = daily_verify_error_hint(&summary);
+        let hint_suffix = hint
+            .map(|value| format!("\nHint: {value}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "supabase global replay verify failed with {status}: {summary}{hint_suffix}\n\
+Ensure /supabase/schema.sql and /supabase/functions/verify-score are deployed."
+        ));
+    }
+
+    Ok(())
+}
+
+async fn submit_remote_daily_score(
+    config: &SupabaseConfig,
+    challenge_key: &str,
+    attempt_token: &str,
+    entry: &ScoreEntry,
+    replay_proof: &DailyReplayProof,
+    client_uuid: &str,
+) -> Result<DailySubmitResult, String> {
+    let endpoint = format!(
+        "{}/functions/v1/{}",
+        config.url.trim_end_matches('/'),
+        VERIFY_SCORE_FUNCTION_NAME
+    );
+    let payload = VerifyScorePayload {
+        mode: DAILY_MODE,
+        challenge_key,
+        attempt_token: Some(attempt_token),
+        client_uuid,
+        entry,
+        replay_proof,
+    };
+
+    let client = create_http_client()?;
+    let response = client
+        .post(endpoint)
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily replay verify failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let summary = summarize_daily_verify_error_body(&body);
+        let hint = daily_verify_error_hint(&summary);
+        let hint_suffix = hint
+            .map(|value| format!("\nHint: {value}"))
+            .unwrap_or_default();
+        return Err(format!(
+            "supabase daily replay verify failed with {status}: {summary}{hint_suffix}\n\
+Ensure /supabase/schema.sql and /supabase/functions/verify-score are deployed."
         ));
     }
 
     let result = response
         .json::<DailySubmitResult>()
         .await
-        .map_err(|error| format!("failed to decode daily submit response: {error}"))?;
+        .map_err(|error| format!("failed to decode daily verify response: {error}"))?;
     Ok(DailySubmitResult {
         accepted: result.accepted,
         improved: result.improved,
@@ -813,13 +1000,123 @@ Ensure /supabase/schema.sql has been applied (including RPC {DAILY_RPC_NAME})."
         attempts_left: result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS),
         max_attempts: DAILY_MAX_ATTEMPTS,
         can_submit: result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS) > 0,
+        has_active_attempt: result.has_active_attempt,
     })
 }
 
-fn is_better_score(incoming: &ScoreEntry, existing: &ScoreEntry) -> bool {
-    if incoming.score != existing.score {
-        return incoming.score > existing.score;
+fn summarize_daily_verify_error_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return "(empty response body)".to_string();
     }
 
-    incoming.level > existing.level
+    let parsed = match serde_json::from_str::<serde_json::Value>(trimmed) {
+        Ok(value) => value,
+        Err(_) => return trimmed.to_string(),
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(value) = parsed.get("error").and_then(|value| value.as_str()) {
+        if !value.trim().is_empty() {
+            parts.push(value.trim().to_string());
+        }
+    }
+    if let Some(value) = parsed.get("reason").and_then(|value| value.as_str()) {
+        if !value.trim().is_empty() {
+            parts.push(format!("reason={}", value.trim()));
+        }
+    }
+    if let Some(value) = parsed.get("detail").and_then(|value| value.as_str()) {
+        if !value.trim().is_empty() {
+            parts.push(format!("detail={}", value.trim()));
+        }
+    }
+    if let Some(value) = parsed.get("code").and_then(|value| value.as_str()) {
+        if !value.trim().is_empty() {
+            parts.push(format!("code={}", value.trim()));
+        }
+    }
+
+    if parts.is_empty() {
+        trimmed.to_string()
+    } else {
+        parts.join(", ")
+    }
+}
+
+fn daily_verify_error_hint(summary: &str) -> Option<&'static str> {
+    if summary.contains("REPLAY_VERIFICATION_FAILED") {
+        return Some("Replay proof mismatch. Check function logs for reason/expected/actual.");
+    }
+    if summary.contains("CHALLENGE_KEY_MISMATCH") {
+        return Some("The UTC day changed during the run. Start a new Daily Challenge attempt.");
+    }
+    if summary.contains("INVALID_ATTEMPT_TOKEN") {
+        return Some("The attempt token is stale. Start a new Daily Challenge attempt.");
+    }
+    if summary.contains("MISSING_SUPABASE_ENV") {
+        return Some("Set SUPABASE_SERVICE_ROLE_KEY in Edge Function secrets.");
+    }
+    if summary.contains("RPC_SUBMIT_GLOBAL_SCORE_FAILED") {
+        return Some("Check submit_global_score RPC and service_role execute grant in schema.");
+    }
+    if summary.contains("permission denied") {
+        return Some(
+            "Grant execute on submit_daily_score/submit_global_score to service_role and redeploy schema.",
+        );
+    }
+    None
+}
+
+async fn forfeit_remote_daily_attempt(
+    config: &SupabaseConfig,
+    challenge_key: &str,
+    attempt_token: &str,
+    client_uuid: &str,
+) -> Result<DailyForfeitResult, String> {
+    let endpoint = format!(
+        "{}/rest/v1/rpc/{}",
+        config.url.trim_end_matches('/'),
+        DAILY_FORFEIT_RPC_NAME
+    );
+    let payload = DailyForfeitPayload {
+        p_client_uuid: client_uuid,
+        p_challenge_key: challenge_key,
+        p_attempt_token: attempt_token,
+    };
+
+    let client = create_http_client()?;
+    let response = client
+        .post(endpoint)
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily forfeit failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "supabase daily forfeit failed with {status}: {body}\n\
+Ensure /supabase/schema.sql has been applied (including RPC {DAILY_FORFEIT_RPC_NAME})."
+        ));
+    }
+
+    let result = response
+        .json::<DailyForfeitResult>()
+        .await
+        .map_err(|error| format!("failed to decode daily forfeit response: {error}"))?;
+
+    let attempts_left = result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS);
+    Ok(DailyForfeitResult {
+        accepted: result.accepted,
+        challenge_key: challenge_key.to_string(),
+        attempts_used: result.attempts_used.clamp(0, DAILY_MAX_ATTEMPTS),
+        attempts_left,
+        max_attempts: DAILY_MAX_ATTEMPTS,
+        can_submit: attempts_left > 0,
+        has_active_attempt: result.has_active_attempt,
+    })
 }
