@@ -11,6 +11,7 @@ pub fn run() {
             scoreboard::submit_global_score,
             scoreboard::fetch_daily_scores,
             scoreboard::fetch_daily_status,
+            scoreboard::fetch_daily_badge_status,
             scoreboard::start_daily_attempt,
             scoreboard::forfeit_daily_attempt,
             scoreboard::submit_daily_score

@@ -310,7 +310,6 @@ code {
   align-items: center;
   gap: 6px;
   min-width: 0;
-  max-width: min(42vw, 460px);
   flex: 1 1 auto;
 }
 
@@ -325,6 +324,7 @@ code {
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
+  max-width: min(38vw, 420px);
 }
 
 .hud-update.required .hud-update-message {
@@ -334,6 +334,7 @@ code {
 .hud-update-link {
   flex: 0 0 auto;
   padding: 2px 8px;
+  margin-left: auto;
 }
 
 .challenge-info {
@@ -417,6 +418,14 @@ button:active {
 #mode-btn {
   white-space: nowrap;
   overflow: hidden;
+}
+
+#mode-btn:disabled,
+#mode-btn:disabled:hover,
+#mode-btn:disabled:active {
+  opacity: 0.62;
+  cursor: not-allowed;
+  transform: none;
 }
 
 #mode-btn.mode-size-animating {
@@ -1730,7 +1739,7 @@ button:active {
     width: 96px;
   }
 
-  .hud-update {
+  .hud-update-message {
     max-width: min(56vw, 320px);
   }
 

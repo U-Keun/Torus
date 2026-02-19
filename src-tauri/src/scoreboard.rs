@@ -20,6 +20,7 @@ const CLASSIC_MODE: &str = "classic";
 const DAILY_MODE: &str = "daily";
 const CLASSIC_CHALLENGE_KEY: &str = "classic";
 const DAILY_MAX_ATTEMPTS: i64 = 3;
+const DAILY_BADGE_MAX_POWER: i64 = 9;
 const DAILY_START_RPC_NAME: &str = "start_daily_attempt";
 const DAILY_FORFEIT_RPC_NAME: &str = "forfeit_daily_attempt";
 const VERIFY_SCORE_FUNCTION_NAME: &str = "verify-score";
@@ -66,6 +67,11 @@ struct DailyAttemptsRow {
     active_attempt_token: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct DailyBadgeKeyRow {
+    challenge_key: String,
+}
+
 #[derive(Debug, Clone)]
 struct SupabaseConfig {
     url: String,
@@ -86,6 +92,24 @@ pub struct DailyStatus {
     can_submit: bool,
     #[serde(rename = "hasActiveAttempt")]
     has_active_attempt: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DailyBadgeStatus {
+    #[serde(rename = "currentStreak")]
+    pub current_streak: i64,
+    #[serde(rename = "maxStreak")]
+    pub max_streak: i64,
+    #[serde(rename = "highestBadgePower")]
+    pub highest_badge_power: Option<i64>,
+    #[serde(rename = "highestBadgeDays")]
+    pub highest_badge_days: Option<i64>,
+    #[serde(rename = "nextBadgePower")]
+    pub next_badge_power: Option<i64>,
+    #[serde(rename = "nextBadgeDays")]
+    pub next_badge_days: Option<i64>,
+    #[serde(rename = "daysToNextBadge")]
+    pub days_to_next_badge: Option<i64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -305,6 +329,24 @@ pub async fn fetch_daily_status(
         &normalized_challenge_key,
         remote_status.attempts_used,
         remote_status.has_active_attempt,
+    ))
+}
+
+#[tauri::command]
+pub async fn fetch_daily_badge_status(
+    app: AppHandle,
+    challenge_key: String,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<DailyBadgeStatus, String> {
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let device_uuid = get_or_create_device_uuid(&app)?;
+    let keys = fetch_remote_daily_badge_keys(&config, &device_uuid).await?;
+    Ok(compute_daily_badge_status(
+        keys,
+        &normalized_challenge_key,
     ))
 }
 
@@ -832,6 +874,200 @@ async fn fetch_remote_daily_attempts(
             .map(|value| !value.trim().is_empty())
             .unwrap_or(false),
     })
+}
+
+async fn fetch_remote_daily_badge_keys(
+    config: &SupabaseConfig,
+    client_uuid: &str,
+) -> Result<Vec<String>, String> {
+    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
+    let mode_filter = format!("eq.{DAILY_MODE}");
+    let uuid_filter = format!("eq.{client_uuid}");
+    let client = create_http_client()?;
+    let response = client
+        .get(endpoint)
+        .query(&[
+            ("select", "challenge_key"),
+            ("mode", mode_filter.as_str()),
+            ("client_uuid", uuid_filter.as_str()),
+            ("daily_has_submission", "eq.true"),
+            ("order", "challenge_key.asc"),
+            ("limit", "2048"),
+        ])
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily badge fetch failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "supabase daily badge fetch failed with {status}: {body}"
+        ));
+    }
+
+    let rows = response
+        .json::<Vec<DailyBadgeKeyRow>>()
+        .await
+        .map_err(|error| format!("failed to decode daily badge response: {error}"))?;
+    Ok(rows.into_iter().map(|row| row.challenge_key).collect())
+}
+
+fn compute_daily_badge_status(
+    accepted_challenge_keys: Vec<String>,
+    challenge_key: &str,
+) -> DailyBadgeStatus {
+    let mut normalized = accepted_challenge_keys
+        .into_iter()
+        .filter_map(|value| normalize_daily_challenge_key(&value).ok())
+        .filter(|value| is_valid_daily_challenge_key(value))
+        .collect::<Vec<_>>();
+
+    normalized.sort();
+    normalized.dedup();
+
+    if normalized.is_empty() {
+        return badge_status_from_streaks(0, 0);
+    }
+
+    let mut max_streak = 1_i64;
+    let mut current_run = 1_i64;
+    let mut latest_run = 1_i64;
+
+    for index in 1..normalized.len() {
+        if is_next_challenge_day(&normalized[index - 1], &normalized[index]) {
+            current_run += 1;
+        } else {
+            current_run = 1;
+        }
+        if current_run > max_streak {
+            max_streak = current_run;
+        }
+    }
+
+    for index in (1..normalized.len()).rev() {
+        if is_next_challenge_day(&normalized[index - 1], &normalized[index]) {
+            latest_run += 1;
+            continue;
+        }
+        break;
+    }
+
+    let latest_key = normalized.last().cloned().unwrap_or_default();
+    let current_streak =
+        if latest_key == challenge_key || is_next_challenge_day(&latest_key, challenge_key) {
+            latest_run
+        } else {
+            0
+        };
+
+    badge_status_from_streaks(current_streak, max_streak)
+}
+
+fn badge_status_from_streaks(current_streak: i64, max_streak: i64) -> DailyBadgeStatus {
+    let highest_badge_power = resolve_badge_power(max_streak);
+    let highest_badge_days = highest_badge_power.map(|power| 2_i64.pow(power as u32));
+    let next_badge_power = match highest_badge_power {
+        None => Some(0),
+        Some(power) if power >= DAILY_BADGE_MAX_POWER => None,
+        Some(power) => Some(power + 1),
+    };
+    let next_badge_days = next_badge_power.map(|power| 2_i64.pow(power as u32));
+    let days_to_next_badge = next_badge_days.map(|days| (days - current_streak).max(0));
+
+    DailyBadgeStatus {
+        current_streak,
+        max_streak,
+        highest_badge_power,
+        highest_badge_days,
+        next_badge_power,
+        next_badge_days,
+        days_to_next_badge,
+    }
+}
+
+fn resolve_badge_power(streak: i64) -> Option<i64> {
+    if streak < 1 {
+        return None;
+    }
+
+    let mut power = 0_i64;
+    while power < DAILY_BADGE_MAX_POWER && 2_i64.pow((power + 1) as u32) <= streak {
+        power += 1;
+    }
+    Some(power)
+}
+
+fn is_next_challenge_day(previous: &str, next: &str) -> bool {
+    let previous_day = challenge_key_to_day_number(previous);
+    let next_day = challenge_key_to_day_number(next);
+    matches!((previous_day, next_day), (Some(left), Some(right)) if right - left == 1)
+}
+
+fn is_valid_daily_challenge_key(challenge_key: &str) -> bool {
+    challenge_key_to_day_number(challenge_key).is_some()
+}
+
+fn challenge_key_to_day_number(challenge_key: &str) -> Option<i64> {
+    if challenge_key.len() != 10 {
+        return None;
+    }
+    let bytes = challenge_key.as_bytes();
+    if bytes[4] != b'-' || bytes[7] != b'-' {
+        return None;
+    }
+
+    let year = parse_i32_digits(&challenge_key[0..4])?;
+    let month = parse_i32_digits(&challenge_key[5..7])?;
+    let day = parse_i32_digits(&challenge_key[8..10])?;
+    if month < 1 || month > 12 {
+        return None;
+    }
+
+    let max_day = days_in_month(year, month as u32);
+    if day < 1 || day as u32 > max_day {
+        return None;
+    }
+
+    Some(days_from_civil(year, month as u32, day as u32))
+}
+
+fn parse_i32_digits(raw: &str) -> Option<i32> {
+    if raw.is_empty() || !raw.bytes().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    raw.parse::<i32>().ok()
+}
+
+fn is_leap_year(year: i32) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+}
+
+fn days_in_month(year: i32, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap_year(year) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
+    let year = year - if month <= 2 { 1 } else { 0 };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let yoe = year - era * 400;
+    let month_index = month as i32 + if month > 2 { -3 } else { 9 };
+    let doy = (153 * month_index + 2) / 5 + day as i32 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) as i64
 }
 
 async fn start_remote_daily_attempt(

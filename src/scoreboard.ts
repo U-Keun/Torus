@@ -1,4 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
+import {
+  type DailyReplayProof,
+  normalizeReplayProof,
+  type ReplayMove,
+} from "./replay-proof";
+export type { DailyReplayProof, ReplayInputEvent, ReplayMove } from "./replay-proof";
 
 export interface SkillUsageEntry {
   name: string;
@@ -59,23 +65,6 @@ export interface DailyAttemptForfeitResult extends DailyChallengeStatus {
 export interface DailyChallengeSubmitResult extends DailyChallengeStatus {
   accepted: boolean;
   improved: boolean;
-}
-
-export type ReplayMove = "left" | "right" | "up" | "down";
-
-export interface ReplayInputEvent {
-  time: number;
-  move: ReplayMove;
-}
-
-export interface DailyReplayProof {
-  version: 1;
-  difficulty: 1 | 2 | 3;
-  seed: number;
-  finalTime: number;
-  finalScore: number;
-  finalLevel: number;
-  inputs: ReplayInputEvent[];
 }
 
 export interface DailyBadgeStatus {
@@ -516,8 +505,15 @@ class TauriScoreboardStore implements ScoreboardStore {
 
   public getDailyBadgeStatus(challengeKey: string): Promise<DailyBadgeStatus> {
     const normalized = normalizeChallengeKey(challengeKey);
-    const keys = readAcceptedDailyChallengeKeys(this.storage);
-    return Promise.resolve(computeDailyBadgeStatus(keys, normalized));
+    return invoke<DailyBadgeStatus>("fetch_daily_badge_status", {
+      challengeKey: normalized,
+      supabaseUrl: this.supabaseUrl || null,
+      supabaseAnonKey: this.supabaseAnonKey || null,
+    }).catch((error) => {
+      console.warn("Failed to load daily badge status from Tauri backend. Using local cache.", error);
+      const keys = readAcceptedDailyChallengeKeys(this.storage);
+      return computeDailyBadgeStatus(keys, normalized);
+    });
   }
 
   private normalizeRemoteRows(rows: ReadonlyArray<ScoreEntry>): ScoreEntry[] {
@@ -669,80 +665,6 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
   }
   const value = raw.trim().slice(0, 120);
   return value.length > 0 ? value : null;
-}
-
-function normalizeReplayProof(raw: unknown): DailyReplayProof | undefined {
-  if (!raw || typeof raw !== "object") {
-    return undefined;
-  }
-  const record = raw as Record<string, unknown>;
-  const version = record.version;
-  const difficulty = record.difficulty;
-  const seed = record.seed;
-  const finalTime = record.finalTime;
-  const finalScore = record.finalScore;
-  const finalLevel = record.finalLevel;
-  if (version !== 1) {
-    return undefined;
-  }
-  if (difficulty !== 1 && difficulty !== 2 && difficulty !== 3) {
-    return undefined;
-  }
-  if (
-    typeof seed !== "number" ||
-    !Number.isFinite(seed) ||
-    typeof finalTime !== "number" ||
-    !Number.isFinite(finalTime) ||
-    typeof finalScore !== "number" ||
-    !Number.isFinite(finalScore) ||
-    typeof finalLevel !== "number" ||
-    !Number.isFinite(finalLevel)
-  ) {
-    return undefined;
-  }
-  const inputs = normalizeReplayInputs(record.inputs);
-  return {
-    version: 1,
-    difficulty,
-    seed: Math.trunc(seed) >>> 0,
-    finalTime: Math.max(0, Math.trunc(finalTime)),
-    finalScore: Math.max(0, Math.trunc(finalScore)),
-    finalLevel: Math.max(0, Math.trunc(finalLevel)),
-    inputs,
-  };
-}
-
-function normalizeReplayInputs(raw: unknown): ReplayInputEvent[] {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-  const normalized: ReplayInputEvent[] = [];
-  let lastTime = -1;
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const move = record.move;
-    const time = record.time;
-    if (
-      typeof time !== "number" ||
-      !Number.isFinite(time) ||
-      (move !== "left" && move !== "right" && move !== "up" && move !== "down")
-    ) {
-      continue;
-    }
-    const normalizedTime = Math.max(0, Math.trunc(time));
-    if (normalizedTime < lastTime) {
-      continue;
-    }
-    normalized.push({
-      time: normalizedTime,
-      move,
-    });
-    lastTime = normalizedTime;
-  }
-  return normalized;
 }
 
 type DailyStoreResolver = (challengeKey: string) => LocalEntryStore;

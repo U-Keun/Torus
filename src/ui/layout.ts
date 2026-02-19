@@ -34,6 +34,10 @@ export interface TorusDom {
   submitConfirmMessageEl: HTMLParagraphElement;
   submitConfirmConfirmBtn: HTMLButtonElement;
   submitConfirmCancelBtn: HTMLButtonElement;
+  noticeModalEl: HTMLDivElement;
+  noticeTitleEl: HTMLHeadingElement;
+  noticeMessageEl: HTMLParagraphElement;
+  noticeOkBtn: HTMLButtonElement;
   sessionRestoreModalEl: HTMLDivElement;
   sessionRestoreMessageEl: HTMLParagraphElement;
   sessionRestoreContinueBtn: HTMLButtonElement;
@@ -60,7 +64,7 @@ export interface TorusDom {
   newBtn: HTMLButtonElement;
   resumeBtn: HTMLButtonElement;
   pauseBtn: HTMLButtonElement;
-  quitBtn: HTMLButtonElement;
+  resetBtn: HTMLButtonElement;
   themeBtn: HTMLButtonElement;
   skillsBtn: HTMLButtonElement;
   toggleScoreBtn: HTMLButtonElement;
@@ -144,7 +148,7 @@ const APP_TEMPLATE = `
         <button id="new-game">New (1)</button>
         <button id="resume-game">Resume (2)</button>
         <button id="pause-game">Pause (3)</button>
-        <button id="quit-game">Quit (4)</button>
+        <button id="reset-game">Reset (4)</button>
         <button id="theme-btn">Theme (5)</button>
         <button id="skills-btn">Skills (6)</button>
         <button id="toggle-score">Score Board (7)</button>
@@ -250,6 +254,16 @@ const APP_TEMPLATE = `
         <div class="gameover-actions">
           <button id="submit-confirm-cancel" type="button">Cancel</button>
           <button id="submit-confirm-ok" type="button" disabled>Submit</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="notice-modal" class="gameover-modal hidden" role="dialog" aria-modal="true" aria-labelledby="notice-title">
+      <div class="gameover-dialog submit-confirm-dialog">
+        <h2 id="notice-title">Notice</h2>
+        <p id="notice-message" class="submit-confirm-message">-</p>
+        <div class="gameover-actions">
+          <button id="notice-ok" type="button">OK</button>
         </div>
       </div>
     </div>
@@ -407,6 +421,10 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     submitConfirmMessageEl: must<HTMLParagraphElement>(container, "#submit-confirm-message"),
     submitConfirmConfirmBtn: must<HTMLButtonElement>(container, "#submit-confirm-ok"),
     submitConfirmCancelBtn: must<HTMLButtonElement>(container, "#submit-confirm-cancel"),
+    noticeModalEl: must<HTMLDivElement>(container, "#notice-modal"),
+    noticeTitleEl: must<HTMLHeadingElement>(container, "#notice-title"),
+    noticeMessageEl: must<HTMLParagraphElement>(container, "#notice-message"),
+    noticeOkBtn: must<HTMLButtonElement>(container, "#notice-ok"),
     sessionRestoreModalEl: must<HTMLDivElement>(container, "#session-restore-modal"),
     sessionRestoreMessageEl: must<HTMLParagraphElement>(container, "#session-restore-message"),
     sessionRestoreContinueBtn: must<HTMLButtonElement>(container, "#session-restore-continue"),
@@ -433,7 +451,7 @@ export function mountTorusLayout(container: HTMLElement): TorusDom {
     newBtn: must<HTMLButtonElement>(container, "#new-game"),
     resumeBtn: must<HTMLButtonElement>(container, "#resume-game"),
     pauseBtn: must<HTMLButtonElement>(container, "#pause-game"),
-    quitBtn: must<HTMLButtonElement>(container, "#quit-game"),
+    resetBtn: must<HTMLButtonElement>(container, "#reset-game"),
     themeBtn: must<HTMLButtonElement>(container, "#theme-btn"),
     skillsBtn: must<HTMLButtonElement>(container, "#skills-btn"),
     toggleScoreBtn: must<HTMLButtonElement>(container, "#toggle-score"),

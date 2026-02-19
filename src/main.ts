@@ -24,6 +24,12 @@ import {
   type ScoreEntry,
   type SkillUsageEntry,
 } from "./scoreboard";
+import {
+  cloneReplayInputs,
+  MAX_REPLAY_INPUTS,
+  normalizeReplayInputs,
+  normalizeReplayProof,
+} from "./replay-proof";
 import { SkillRunner, type SkillRunnerState } from "./skills/runner";
 import { SkillStore } from "./skills/store";
 import {
@@ -92,7 +98,6 @@ const KEY_PAGE_FADE_MS = 220;
 const SKILL_FORM_IDLE_TEXT = "Create a skill and optionally assign a hotkey.";
 const THEME_CUSTOM_FORM_IDLE_TEXT = "Adjust colors and click Apply or Save.";
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
-const MAX_DAILY_REPLAY_INPUTS = 20000;
 let pendingGameOverPayload: GameOverPayload | null = null;
 let pendingSubmitEntry: ScoreEntry | null = null;
 let pendingSubmitReplayProof: DailyReplayProof | null = null;
@@ -132,6 +137,7 @@ let restoringSessionSnapshot = false;
 let lastSessionSnapshotPayload = "";
 let pendingSessionRestoreSnapshot: PersistedSessionSnapshot | null = null;
 let updateNoticeDownloadUrl: string | null = null;
+let noticeModalOnClose: (() => void) | null = null;
 const SHARED_SCOREBOARD_LOADING_MESSAGE = "Loading global records";
 
 const game = new TorusGame(
@@ -178,6 +184,7 @@ bindUiControls();
 bindKeyboardControls();
 bindGameOverModal();
 bindSubmitConfirmModal();
+bindNoticeModal();
 bindSessionRestoreModal();
 bindThemeCustomModal();
 bindSkillsModal();
@@ -222,7 +229,7 @@ function bindUiControls(): void {
     pauseGame();
   });
 
-  dom.quitBtn.addEventListener("click", () => {
+  dom.resetBtn.addEventListener("click", () => {
     resetGame();
   });
 
@@ -359,6 +366,14 @@ function bindKeyboardControls(): void {
       return;
     }
 
+    if (isNoticeModalOpen()) {
+      if (event.key === "Escape" || event.key === "Enter") {
+        closeNoticeModal();
+      }
+      event.preventDefault();
+      return;
+    }
+
     if (isSubmitConfirmModalOpen()) {
       if (event.key === "Escape") {
         closeSubmitConfirmModal();
@@ -415,6 +430,7 @@ function bindKeyboardControls(): void {
 function startNewGame(): void {
   closeGameOverModal();
   closeSubmitConfirmModal();
+  closeNoticeModal();
   closeThemeCustomModal();
   closeSkillsModal();
   collapseExpandedScoreRow();
@@ -458,6 +474,7 @@ function pauseGame(): void {
 function resetGame(): void {
   closeGameOverModal();
   closeSubmitConfirmModal();
+  closeNoticeModal();
   closeThemeCustomModal();
   closeSkillsModal();
   collapseExpandedScoreRow();
@@ -510,6 +527,24 @@ function cycleDifficulty(): void {
 function setStatus(status: GameStatus): void {
   activeGameStatus = status;
   renderer.setStatus(status);
+  syncModeButtonAvailability();
+}
+
+function isModeSwitchLocked(): boolean {
+  return canResume && (activeGameStatus === "Running" || activeGameStatus === "Paused");
+}
+
+function syncModeButtonAvailability(): void {
+  const locked = isModeSwitchLocked();
+  dom.modeBtn.disabled = locked;
+  if (locked) {
+    dom.modeBtn.title = "Mode switching is disabled while a run is active or paused.";
+    return;
+  }
+
+  dom.modeBtn.title = gameMode === "daily"
+    ? "Daily Challenge uses a fixed seed and fixed difficulty."
+    : "Classic mode uses normal random generation.";
 }
 
 function hasRecoverableDailyAttemptState(
@@ -543,7 +578,7 @@ async function startDailyChallengeGame(): Promise<void> {
     if (!attemptResult.accepted || !attemptResult.attemptToken) {
       const used = attemptResult.attemptsUsed;
       const max = attemptResult.maxAttempts;
-      window.alert(`Daily Challenge limit reached (${used}/${max}). Try again tomorrow (UTC).`);
+      openNoticeModal("Daily Challenge", `No Daily Challenge attempts left for today (${used}/${max}).`);
       return;
     }
 
@@ -558,7 +593,7 @@ async function startDailyChallengeGame(): Promise<void> {
       setDailyChallengeStatus(toDailyChallengeStatus(forfeitResult));
       activeDailyAttemptToken = null;
       if (!forfeitResult.accepted) {
-        window.alert("Failed to clear stale Daily attempt. Please try again.");
+        openNoticeModal("Daily Challenge", "Failed to clear stale Daily attempt. Please try again.");
         return;
       }
       attemptResult = await scoreboardStore.startDailyAttempt(challenge.key);
@@ -566,7 +601,7 @@ async function startDailyChallengeGame(): Promise<void> {
       if (!attemptResult.accepted || !attemptResult.attemptToken) {
         const used = attemptResult.attemptsUsed;
         const max = attemptResult.maxAttempts;
-        window.alert(`Daily Challenge limit reached (${used}/${max}). Try again tomorrow (UTC).`);
+        openNoticeModal("Daily Challenge", `No Daily Challenge attempts left for today (${used}/${max}).`);
         return;
       }
     }
@@ -597,7 +632,7 @@ async function startDailyChallengeGame(): Promise<void> {
     saveSessionSnapshot(true);
   } catch (error) {
     console.warn("Failed to start daily challenge attempt.", error);
-    window.alert("Failed to verify Daily Challenge attempts. Check network/Supabase and try again.");
+    openNoticeModal("Daily Challenge", "Failed to verify Daily Challenge attempts. Check network/Supabase and try again.");
   } finally {
     startingDailyChallenge = false;
   }
@@ -632,6 +667,9 @@ async function refreshDailyBadgeStatus(
 }
 
 async function toggleGameMode(): Promise<void> {
+  if (isModeSwitchLocked()) {
+    return;
+  }
   gameMode = gameMode === "daily" ? "classic" : "daily";
   saveGameModePreference(gameMode);
   if (gameMode === "daily") {
@@ -660,9 +698,7 @@ function syncGameModeUi(
     dailyMode ? "Mode: Daily" : "Mode: Classic",
     options.animateModeButton === true,
   );
-  dom.modeBtn.title = dailyMode
-    ? "Daily Challenge uses a fixed seed and fixed difficulty."
-    : "Classic mode uses normal random generation.";
+  syncModeButtonAvailability();
   setChallengeInfoLabel(
     dailyMode ? formatDailyChallengeInfo(challenge) : "Classic mode",
     options.animateChallengeInfo === true,
@@ -676,10 +712,10 @@ function syncGameModeUi(
 
 function formatDailyChallengeInfo(challenge: DailyChallengeSpec): string {
   if (!dailyChallengeStatus || dailyChallengeStatus.challengeKey !== challenge.key) {
-    return `Daily Challenge (UTC): ${challenge.key} · Difficulty ${challenge.difficulty}`;
+    return `Daily Challenge: ${challenge.key} · Difficulty ${challenge.difficulty}`;
   }
   return (
-    `Daily Challenge (UTC): ${challenge.key} · ${dailyChallengeStatus.attemptsLeft}/` +
+    `Daily Challenge: ${challenge.key} · ${dailyChallengeStatus.attemptsLeft}/` +
     `${dailyChallengeStatus.maxAttempts} attempts left`
   );
 }
@@ -710,7 +746,7 @@ function syncDailyBadgeUi(): void {
     badge.textContent = "Badge: -";
     badge.title = [
       "No badge earned yet.",
-      "Daily badges are granted for consecutive successful Daily submissions (UTC).",
+      "Daily badges are granted for consecutive successful Daily submissions.",
       "Thresholds: 1, 2, 4, 8, ..., 512 days.",
       `Current streak: ${formatDaysCount(dailyBadgeStatus?.currentStreak ?? 0)}.`,
     ].join("\n");
@@ -755,7 +791,7 @@ function formatDailyBadgeTooltip(
   } else {
     lines.push("Top tier reached: 2^9 (512 days).");
   }
-  lines.push("Rule: only successful Daily submissions count (strict consecutive days, UTC).");
+  lines.push("Rule: only successful Daily submissions count (strict consecutive days).");
   return lines.join("\n");
 }
 
@@ -777,7 +813,7 @@ function formatDailyBadgeTooltipInline(
   } else {
     parts.push("Top tier reached: 2^9 (512 days)");
   }
-  parts.push("Rule: successful Daily submissions only, strict consecutive UTC days");
+  parts.push("Rule: successful Daily submissions only, strict consecutive days");
   return parts.join(" | ");
 }
 
@@ -954,7 +990,7 @@ function appendRunReplayInput(
   if (!gameOn || currentRunReplaySeed === null) {
     return;
   }
-  if (currentRunReplayInputs.length >= MAX_DAILY_REPLAY_INPUTS) {
+  if (currentRunReplayInputs.length >= MAX_REPLAY_INPUTS) {
     return;
   }
   currentRunReplayInputs.push({
@@ -1160,6 +1196,18 @@ function bindSubmitConfirmModal(): void {
       !submittingPersonalBest
     ) {
       closeSubmitConfirmModal();
+    }
+  });
+}
+
+function bindNoticeModal(): void {
+  dom.noticeOkBtn.addEventListener("click", () => {
+    closeNoticeModal();
+  });
+
+  dom.noticeModalEl.addEventListener("click", (event) => {
+    if (event.target === dom.noticeModalEl) {
+      closeNoticeModal();
     }
   });
 }
@@ -1565,7 +1613,7 @@ function importSkillFromScoreboard(scoreIndex: number, skillIndex: number): void
   const name = usage.name.trim().slice(0, MAX_SKILL_NAME_LENGTH);
   const command = usage.command ? usage.command.trim() : "";
   if (name.length === 0 || command.length === 0) {
-    window.alert("This skill cannot be imported because command data is missing.");
+    openNoticeModal("Skills", "This skill cannot be imported because command data is missing.");
     return;
   }
 
@@ -1574,7 +1622,7 @@ function importSkillFromScoreboard(scoreIndex: number, skillIndex: number): void
     sequence = parseDirectionSequence(command);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid skill command.";
-    window.alert(`Failed to import "${name}". ${message}`);
+    openNoticeModal("Skills", `Failed to import "${name}". ${message}`);
     return;
   }
 
@@ -1584,7 +1632,7 @@ function importSkillFromScoreboard(scoreIndex: number, skillIndex: number): void
     directionSequenceToLabel(skill.sequence) === sequenceLabel
   ));
   if (alreadyExists) {
-    window.alert(`"${name}" is already in your skill list.`);
+    openNoticeModal("Skills", `"${name}" is already in your skill list.`);
     return;
   }
 
@@ -1601,12 +1649,12 @@ function importSkillFromScoreboard(scoreIndex: number, skillIndex: number): void
     hotkey = normalizeSkillHotkeyInput(hotkeyInput);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Invalid hotkey.";
-    window.alert(message);
+    openNoticeModal("Skills", message);
     return;
   }
 
   if (hotkey && skills.some((skill) => skill.hotkey === hotkey)) {
-    window.alert(`"${skillHotkeyLabel(hotkey)}" is already used by another skill.`);
+    openNoticeModal("Skills", `"${skillHotkeyLabel(hotkey)}" is already used by another skill.`);
     return;
   }
 
@@ -1622,11 +1670,11 @@ function importSkillFromScoreboard(scoreIndex: number, skillIndex: number): void
     if (isSkillsModalOpen()) {
       setSkillFormMessage(message, "good");
     } else {
-      window.alert(message);
+      openNoticeModal("Skills", message);
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to import skill.";
-    window.alert(message);
+    openNoticeModal("Skills", message);
   }
 }
 
@@ -1939,6 +1987,7 @@ function setThemeCustomMessage(
 
 function openGameOverModal(payload: GameOverPayload): void {
   closeSubmitConfirmModal();
+  closeNoticeModal();
   closeThemeCustomModal();
   closeSkillsModal();
   const lastUser = game.getLastUser().trim();
@@ -2275,6 +2324,41 @@ function isSubmitConfirmModalOpen(): boolean {
   return !dom.submitConfirmModalEl.classList.contains("hidden");
 }
 
+function openNoticeModal(title: string, message: string, onClose?: () => void): void {
+  if (isNoticeModalOpen() && noticeModalOnClose) {
+    const previousOnClose = noticeModalOnClose;
+    noticeModalOnClose = null;
+    previousOnClose();
+  }
+  noticeModalOnClose = onClose ?? null;
+  dom.noticeTitleEl.textContent = title.trim().slice(0, 60) || "Notice";
+  dom.noticeMessageEl.textContent = message;
+  dom.noticeModalEl.classList.remove("hidden");
+  dom.noticeOkBtn.focus();
+}
+
+function openNoticeModalAndWait(title: string, message: string): Promise<void> {
+  return new Promise((resolve) => {
+    openNoticeModal(title, message, resolve);
+  });
+}
+
+function closeNoticeModal(): void {
+  if (!isNoticeModalOpen()) {
+    return;
+  }
+  dom.noticeModalEl.classList.add("hidden");
+  const onClose = noticeModalOnClose;
+  noticeModalOnClose = null;
+  if (onClose) {
+    onClose();
+  }
+}
+
+function isNoticeModalOpen(): boolean {
+  return !dom.noticeModalEl.classList.contains("hidden");
+}
+
 async function setScoreboardView(nextView: ScoreboardView): Promise<void> {
   if (scoreboardView === nextView) {
     return;
@@ -2336,7 +2420,7 @@ function syncScoreboardViewUi(): void {
   dom.dailyScoreBtn.setAttribute("aria-pressed", dailyMode ? "true" : "false");
 
   dom.submitPersonalBtn.title = dailyMode
-    ? "Daily Challenge records are stored locally for now."
+    ? "Daily Challenge runs are auto-submitted. Use GLOBAL/PERSONAL tabs for manual submit."
     : "";
   if (!submittingPersonalBest) {
     dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
@@ -2432,50 +2516,6 @@ function cloneSkillUsageList(usages: ReadonlyArray<SkillUsageEntry>): SkillUsage
   }));
 }
 
-function cloneReplayInputs(
-  events: ReadonlyArray<ReplayInputEvent>,
-): ReplayInputEvent[] {
-  return events.map((event) => ({
-    time: event.time,
-    move: event.move,
-  }));
-}
-
-function normalizeReplayInputs(
-  raw: unknown,
-): ReplayInputEvent[] {
-  if (!Array.isArray(raw)) {
-    return [];
-  }
-
-  const normalized: ReplayInputEvent[] = [];
-  let lastTime = -1;
-  for (const entry of raw) {
-    if (!entry || typeof entry !== "object") {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const move = record.move;
-    const time = record.time;
-    if (!isReplayMove(move) || typeof time !== "number" || !Number.isFinite(time)) {
-      continue;
-    }
-    const normalizedTime = Math.max(0, Math.trunc(time));
-    if (normalizedTime < lastTime) {
-      continue;
-    }
-    normalized.push({
-      time: normalizedTime,
-      move,
-    });
-    lastTime = normalizedTime;
-    if (normalized.length >= MAX_DAILY_REPLAY_INPUTS) {
-      break;
-    }
-  }
-  return normalized;
-}
-
 function normalizeReplaySeed(raw: unknown): number | null {
   if (typeof raw !== "number" || !Number.isFinite(raw)) {
     return null;
@@ -2509,10 +2549,6 @@ function resolveSnapshotReplayDifficulty(snapshot: PersistedSessionSnapshot): Di
     return normalizeReplayDifficulty(snapshot.currentRunReplayDifficulty);
   }
   return normalizeReplayDifficulty(snapshot.gameState?.difficulty);
-}
-
-function isReplayMove(value: unknown): value is ReplayMove {
-  return value === "left" || value === "right" || value === "up" || value === "down";
 }
 
 function buildRunReplayProof(entry: ScoreEntry): DailyReplayProof {
@@ -2980,44 +3016,7 @@ function loadDeviceBestEntry(): ScoreEntry | null {
 }
 
 function normalizeStoredReplayProof(raw: unknown): DailyReplayProof | undefined {
-  if (!raw || typeof raw !== "object") {
-    return undefined;
-  }
-  const record = raw as Record<string, unknown>;
-  const version = record.version;
-  const difficulty = record.difficulty;
-  const seed = record.seed;
-  const finalTime = record.finalTime;
-  const finalScore = record.finalScore;
-  const finalLevel = record.finalLevel;
-  if (version !== 1) {
-    return undefined;
-  }
-  if (difficulty !== 1 && difficulty !== 2 && difficulty !== 3) {
-    return undefined;
-  }
-  if (
-    typeof seed !== "number" ||
-    !Number.isFinite(seed) ||
-    typeof finalTime !== "number" ||
-    !Number.isFinite(finalTime) ||
-    typeof finalScore !== "number" ||
-    !Number.isFinite(finalScore) ||
-    typeof finalLevel !== "number" ||
-    !Number.isFinite(finalLevel)
-  ) {
-    return undefined;
-  }
-  const inputs = normalizeReplayInputs(record.inputs);
-  return {
-    version: 1,
-    difficulty,
-    seed: Math.trunc(seed) >>> 0,
-    finalTime: Math.max(0, Math.trunc(finalTime)),
-    finalScore: Math.max(0, Math.trunc(finalScore)),
-    finalLevel: Math.max(0, Math.trunc(finalLevel)),
-    inputs,
-  };
+  return normalizeReplayProof(raw, MAX_REPLAY_INPUTS);
 }
 
 function saveDeviceBestEntry(entry: ScoreEntry): void {
@@ -3143,7 +3142,10 @@ async function maybeCheckForUpdatesOnLaunch(): Promise<void> {
     }
 
     await update.downloadAndInstall();
-    window.alert(`Torus v${update.version} has been installed. The app will now restart.`);
+    await openNoticeModalAndWait(
+      "Update",
+      `Torus v${update.version} has been installed. The app will now restart.`,
+    );
     await relaunch();
   } catch (error) {
     console.warn("Failed to check/install app updates.", error);
@@ -3257,6 +3259,6 @@ async function openUpdateNoticeDownload(): Promise<void> {
     await openUrl(updateNoticeDownloadUrl);
   } catch (error) {
     console.warn("Failed to open update download link.", error);
-    window.alert(`Open this link to update:\n${updateNoticeDownloadUrl}`);
+    openNoticeModal("Update", `Open this link to update: ${updateNoticeDownloadUrl}`);
   }
 }
