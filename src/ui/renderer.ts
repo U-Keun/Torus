@@ -25,6 +25,8 @@ export class TorusRenderer {
   private status: GameStatus = "Paused";
   private scoreVisible = true;
   private expandedScoreIndex: number | null = null;
+  private lastPoleHeight: number | null = null;
+  private poleResizeTimer: number | null = null;
 
   constructor(private readonly dom: TorusDom) {}
 
@@ -53,6 +55,7 @@ export class TorusRenderer {
   }
 
   public refreshLayout(): void {
+    this.syncSideColumnLayout();
     this.syncPanelHeights();
   }
 
@@ -63,6 +66,8 @@ export class TorusRenderer {
   public setScoreboardVisible(visible: boolean): void {
     this.scoreVisible = visible;
     this.dom.scoreCardEl.classList.toggle("hidden", !visible);
+    this.syncSideColumnLayout();
+    this.syncPanelHeights();
   }
 
   public renderScoreboard(
@@ -269,6 +274,10 @@ export class TorusRenderer {
   }
 
   private renderPole(snapshot: GameSnapshot): void {
+    const poleStageEl = this.getPoleStageElement();
+    const previousHeight = poleStageEl?.getBoundingClientRect().height ?? 0;
+    const shouldAnimateHeight = this.lastPoleHeight !== null && this.lastPoleHeight !== snapshot.poleHeight;
+
     this.dom.poleGridEl.style.gridTemplateColumns = `repeat(${snapshot.numCols}, var(--ascii-cell-width))`;
 
     const cells: string[] = [];
@@ -288,6 +297,10 @@ export class TorusRenderer {
     }
 
     this.dom.poleGridEl.innerHTML = cells.join("");
+    this.lastPoleHeight = snapshot.poleHeight;
+    if (shouldAnimateHeight) {
+      this.animatePoleStageResize(previousHeight);
+    }
   }
 
   private renderPoleCell(entry: PoleEntry, difficulty: Difficulty): string {
@@ -300,6 +313,45 @@ export class TorusRenderer {
     }
 
     return this.renderStaticBoxCell(entry, difficulty);
+  }
+
+  private getPoleStageElement(): HTMLDivElement | null {
+    const parent = this.dom.poleGridEl.parentElement;
+    if (!(parent instanceof HTMLDivElement)) {
+      return null;
+    }
+    return parent;
+  }
+
+  private animatePoleStageResize(previousHeight: number): void {
+    const poleStageEl = this.getPoleStageElement();
+    if (!poleStageEl || previousHeight <= 0) {
+      return;
+    }
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      return;
+    }
+
+    const nextHeight = poleStageEl.getBoundingClientRect().height;
+    if (!Number.isFinite(nextHeight) || Math.abs(nextHeight - previousHeight) < 1) {
+      return;
+    }
+
+    if (this.poleResizeTimer !== null) {
+      window.clearTimeout(this.poleResizeTimer);
+      this.poleResizeTimer = null;
+    }
+
+    poleStageEl.style.height = `${previousHeight}px`;
+    poleStageEl.style.transition = "height 280ms cubic-bezier(0.22, 1, 0.36, 1)";
+    void poleStageEl.offsetWidth;
+    poleStageEl.style.height = `${nextHeight}px`;
+
+    this.poleResizeTimer = window.setTimeout(() => {
+      poleStageEl.style.height = "";
+      poleStageEl.style.transition = "";
+      this.poleResizeTimer = null;
+    }, 320);
   }
 
   private syncPanelHeights(): void {
@@ -323,6 +375,21 @@ export class TorusRenderer {
       : target;
 
     side.style.height = `${clamped}px`;
+  }
+
+  private syncSideColumnLayout(): void {
+    const arena = this.dom.boardStageCardEl.parentElement;
+    if (!(arena instanceof HTMLElement)) {
+      return;
+    }
+
+    const scoreHidden = !this.scoreVisible;
+    const keyVisible = !this.dom.keyCardEl.classList.contains("hidden");
+    const sideHidden = scoreHidden && !keyVisible;
+
+    this.dom.sideColumnEl.classList.toggle("score-hidden", scoreHidden);
+    arena.classList.toggle("score-hidden", scoreHidden && keyVisible);
+    arena.classList.toggle("side-hidden", sideHidden);
   }
 }
 

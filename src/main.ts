@@ -1058,6 +1058,7 @@ function toggleKeyCard(): void {
     keyCardVisible = true;
     dom.keyCardEl.classList.remove("hidden");
     dom.sideColumnEl.classList.remove("key-hidden");
+    renderer.refreshLayout();
     return;
   }
 
@@ -1070,6 +1071,7 @@ function toggleKeyCard(): void {
   keyCardVisible = false;
   dom.keyCardEl.classList.add("hidden");
   dom.sideColumnEl.classList.add("key-hidden");
+  renderer.refreshLayout();
 }
 
 function setKeyGuidePage(

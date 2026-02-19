@@ -441,6 +441,21 @@ button:active {
   gap: 14px;
   align-items: start;
   min-height: 0;
+  transition: grid-template-columns var(--motion-4xl) ease, gap var(--motion-4xl) ease;
+}
+
+.arena.score-hidden {
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 256px);
+}
+
+.arena.side-hidden {
+  grid-template-columns: minmax(0, 1fr) 0;
+  gap: 0;
+}
+
+.arena.side-hidden .side-column {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .board-card,
@@ -455,7 +470,15 @@ button:active {
   row-gap: clamp(8px, 1vh, 12px);
   min-height: 0;
   overflow: hidden;
-  transition: grid-template-rows var(--motion-2xl) ease, row-gap var(--motion-2xl) ease;
+  transition:
+    grid-template-rows var(--motion-4xl) ease,
+    row-gap var(--motion-4xl) ease,
+    opacity var(--motion-4xl) ease;
+}
+
+.side-column.score-hidden {
+  grid-template-rows: minmax(0, 0fr) minmax(0, 1fr);
+  row-gap: 0;
 }
 
 .side-column.key-hidden {
@@ -638,7 +661,7 @@ button:active {
 }
 
 .score-card {
-  transition: opacity var(--motion-md) ease, transform var(--motion-md) ease;
+  transition: opacity var(--motion-4xl) ease, transform var(--motion-4xl) ease;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   min-height: 0;
@@ -1657,6 +1680,12 @@ button:active {
 
   .arena {
     grid-template-columns: 1fr;
+  }
+
+  .arena.score-hidden,
+  .arena.side-hidden {
+    grid-template-columns: 1fr;
+    gap: 14px;
   }
 
   .side-column {
