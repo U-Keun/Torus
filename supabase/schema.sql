@@ -97,6 +97,147 @@ create index if not exists idx_scores_daily_rank
   on public.scores (challenge_key, score desc, level desc, created_at desc)
   where mode = 'daily' and daily_has_submission = true;
 
+create table if not exists public.daily_streak_states (
+  client_uuid text primary key check (char_length(trim(client_uuid)) between 8 and 80),
+  current_streak integer not null default 0 check (current_streak >= 0),
+  max_streak integer not null default 0 check (max_streak >= 0),
+  last_submission_key text
+    check (
+      last_submission_key is null
+      or last_submission_key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    ),
+  updated_at timestamptz not null default now()
+);
+
+do $$
+begin
+  if to_regclass('public.daily_streak_submissions') is not null then
+    execute $migrate$
+      with source as (
+        select
+          client_uuid,
+          challenge_key::date as challenge_date
+        from public.daily_streak_submissions
+        group by client_uuid, challenge_key::date
+      ),
+      numbered as (
+        select
+          client_uuid,
+          challenge_date,
+          challenge_date
+            - (row_number() over (partition by client_uuid order by challenge_date))::integer
+            as run_group
+        from source
+      ),
+      runs as (
+        select
+          client_uuid,
+          max(challenge_date) as end_date,
+          count(*)::integer as run_len
+        from numbered
+        group by client_uuid, run_group
+      ),
+      latest as (
+        select distinct on (client_uuid)
+          client_uuid,
+          end_date,
+          run_len
+        from runs
+        order by client_uuid, end_date desc
+      ),
+      maxes as (
+        select client_uuid, max(run_len)::integer as max_streak
+        from runs
+        group by client_uuid
+      )
+      insert into public.daily_streak_states (
+        client_uuid,
+        current_streak,
+        max_streak,
+        last_submission_key,
+        updated_at
+      )
+      select
+        latest.client_uuid,
+        latest.run_len,
+        greatest(latest.run_len, maxes.max_streak),
+        to_char(latest.end_date, 'YYYY-MM-DD'),
+        now()
+      from latest
+      join maxes using (client_uuid)
+      on conflict (client_uuid) do update set
+        current_streak = excluded.current_streak,
+        max_streak = greatest(public.daily_streak_states.max_streak, excluded.max_streak),
+        last_submission_key = excluded.last_submission_key,
+        updated_at = excluded.updated_at;
+    $migrate$;
+
+    execute 'drop table public.daily_streak_submissions';
+  end if;
+end
+$$;
+
+with source as (
+  select
+    client_uuid,
+    challenge_key::date as challenge_date
+  from public.scores
+  where mode = 'daily'
+    and daily_has_submission = true
+    and challenge_key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+  group by client_uuid, challenge_key::date
+),
+numbered as (
+  select
+    client_uuid,
+    challenge_date,
+    challenge_date
+      - (row_number() over (partition by client_uuid order by challenge_date))::integer
+      as run_group
+  from source
+),
+runs as (
+  select
+    client_uuid,
+    max(challenge_date) as end_date,
+    count(*)::integer as run_len
+  from numbered
+  group by client_uuid, run_group
+),
+latest as (
+  select distinct on (client_uuid)
+    client_uuid,
+    end_date,
+    run_len
+  from runs
+  order by client_uuid, end_date desc
+),
+maxes as (
+  select client_uuid, max(run_len)::integer as max_streak
+  from runs
+  group by client_uuid
+)
+insert into public.daily_streak_states (
+  client_uuid,
+  current_streak,
+  max_streak,
+  last_submission_key,
+  updated_at
+)
+select
+  latest.client_uuid,
+  latest.run_len,
+  greatest(latest.run_len, maxes.max_streak),
+  to_char(latest.end_date, 'YYYY-MM-DD'),
+  now()
+from latest
+join maxes using (client_uuid)
+on conflict (client_uuid) do update set
+  current_streak = excluded.current_streak,
+  max_streak = greatest(public.daily_streak_states.max_streak, excluded.max_streak),
+  last_submission_key = excluded.last_submission_key,
+  updated_at = excluded.updated_at;
+
 alter table public.scores enable row level security;
 
 drop policy if exists scores_select_public on public.scores;
@@ -108,6 +249,16 @@ create policy scores_select_public
 drop policy if exists scores_insert_public on public.scores;
 
 drop policy if exists scores_update_public on public.scores;
+
+alter table public.daily_streak_states enable row level security;
+
+drop policy if exists daily_streak_states_select_public on public.daily_streak_states;
+create policy daily_streak_states_select_public
+  on public.daily_streak_states
+  for select
+  using (true);
+
+grant select on public.daily_streak_states to anon, authenticated;
 
 drop function if exists public.submit_daily_score(
   text,
@@ -405,6 +556,11 @@ declare
   v_attempts_used integer;
   v_attempts_left integer;
   v_is_better boolean;
+  v_previous_current_streak integer := 0;
+  v_previous_max_streak integer := 0;
+  v_previous_last_submission_key text := null;
+  v_new_current_streak integer := 1;
+  v_new_max_streak integer := 1;
   v_today_key text := to_char((now() at time zone 'utc')::date, 'YYYY-MM-DD');
 begin
   if char_length(v_client_uuid) < 8 then
@@ -505,6 +661,53 @@ begin
     created_at = case when v_is_better then v_created_at else created_at end,
     skill_usage = case when v_is_better then v_skill_usage else skill_usage end
   where id = v_existing_id;
+
+  select current_streak, max_streak, last_submission_key
+  into v_previous_current_streak, v_previous_max_streak, v_previous_last_submission_key
+  from public.daily_streak_states
+  where client_uuid = v_client_uuid
+  for update;
+
+  if not found then
+    v_new_current_streak := 1;
+    v_new_max_streak := 1;
+  elsif v_previous_last_submission_key = v_challenge_key then
+    v_new_current_streak := greatest(0, coalesce(v_previous_current_streak, 0));
+    v_new_max_streak := greatest(coalesce(v_previous_max_streak, 0), v_new_current_streak);
+  elsif
+    v_previous_last_submission_key is not null
+    and v_previous_last_submission_key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+    and (
+      to_date(v_challenge_key, 'YYYY-MM-DD')
+      - to_date(v_previous_last_submission_key, 'YYYY-MM-DD')
+    ) = 1
+  then
+    v_new_current_streak := greatest(0, coalesce(v_previous_current_streak, 0)) + 1;
+    v_new_max_streak := greatest(coalesce(v_previous_max_streak, 0), v_new_current_streak);
+  else
+    v_new_current_streak := 1;
+    v_new_max_streak := greatest(coalesce(v_previous_max_streak, 0), 1);
+  end if;
+
+  insert into public.daily_streak_states (
+    client_uuid,
+    current_streak,
+    max_streak,
+    last_submission_key,
+    updated_at
+  )
+  values (
+    v_client_uuid,
+    v_new_current_streak,
+    v_new_max_streak,
+    v_challenge_key,
+    now()
+  )
+  on conflict (client_uuid) do update set
+    current_streak = excluded.current_streak,
+    max_streak = greatest(public.daily_streak_states.max_streak, excluded.max_streak),
+    last_submission_key = excluded.last_submission_key,
+    updated_at = excluded.updated_at;
 
   return jsonb_build_object(
     'accepted', true,

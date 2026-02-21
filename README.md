@@ -128,6 +128,10 @@ The schema includes:
 - `scores.daily_has_submission` (`boolean`: daily ranking visibility)
 - `scores.active_attempt_token` (`text`: active daily attempt token)
 - `scores.created_at` (`timestamptz`)
+- `daily_streak_states.client_uuid` (`text`)
+- `daily_streak_states.current_streak` (`integer`)
+- `daily_streak_states.max_streak` (`integer`)
+- `daily_streak_states.last_submission_key` (`text`: `YYYY-MM-DD` or `null`)
 - `submit_daily_score(...)` RPC function (server-enforced daily attempts)
 - `verify-score` Edge Function (server replay verification for Global and Daily)
 
@@ -169,7 +173,9 @@ Default fetch size is top 10.
   - Supabase Edge Function re-simulates the run and rejects mismatched score/level/time.
   - `attempts_used` increments even when score does not improve.
   - When daily best improves, that run is also auto-submitted to classic Global (same best-upsert rule).
-  - Daily streak badges are computed from successful Daily submissions (strict consecutive UTC days).
+  - `scores` keeps only today's Daily rows.
+  - Daily streak state is kept in `daily_streak_states` (`current_streak`, `max_streak`, `last_submission_key`).
+  - Badge tier is derived from stored `max_streak`.
 
 This prevents duplicate classic entries and makes daily attempt limits tamper-resistant.
 

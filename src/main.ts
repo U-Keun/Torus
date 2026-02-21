@@ -740,10 +740,10 @@ function syncDailyBadgeUi(): void {
   }
 
   if (!dailyBadgeStatus || dailyBadgeStatus.highestBadgePower === null) {
-    badge.classList.remove("hidden");
+    badge.classList.add("hidden");
     badge.classList.remove("icon-badge");
     badge.innerHTML = "";
-    badge.textContent = "Badge: -";
+    badge.textContent = "";
     badge.title = [
       "No badge earned yet.",
       "Daily badges are granted for consecutive successful Daily submissions.",

@@ -68,8 +68,13 @@ struct DailyAttemptsRow {
 }
 
 #[derive(Debug, Deserialize)]
-struct DailyBadgeKeyRow {
-    challenge_key: String,
+struct DailyStreakStateRow {
+    #[serde(default)]
+    current_streak: Option<i64>,
+    #[serde(default)]
+    max_streak: Option<i64>,
+    #[serde(default)]
+    last_submission_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -343,11 +348,22 @@ pub async fn fetch_daily_badge_status(
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
-    let keys = fetch_remote_daily_badge_keys(&config, &device_uuid).await?;
-    Ok(compute_daily_badge_status(
-        keys,
-        &normalized_challenge_key,
-    ))
+    let state = fetch_remote_daily_streak_state(&config, &device_uuid).await?;
+    let (current_streak, max_streak) = match state {
+        Some(value) => {
+            let stored_current = value.current_streak.unwrap_or(0).max(0);
+            let stored_max = value.max_streak.unwrap_or(0).max(stored_current).max(0);
+            let effective_current =
+                if is_current_streak_alive(value.last_submission_key.as_deref(), &normalized_challenge_key) {
+                    stored_current
+                } else {
+                    0
+                };
+            (effective_current, stored_max)
+        }
+        None => (0, 0),
+    };
+    Ok(badge_status_from_streaks(current_streak, max_streak))
 }
 
 #[tauri::command]
@@ -876,23 +892,22 @@ async fn fetch_remote_daily_attempts(
     })
 }
 
-async fn fetch_remote_daily_badge_keys(
+async fn fetch_remote_daily_streak_state(
     config: &SupabaseConfig,
     client_uuid: &str,
-) -> Result<Vec<String>, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
-    let mode_filter = format!("eq.{DAILY_MODE}");
+) -> Result<Option<DailyStreakStateRow>, String> {
+    let endpoint = format!(
+        "{}/rest/v1/daily_streak_states",
+        config.url.trim_end_matches('/')
+    );
     let uuid_filter = format!("eq.{client_uuid}");
     let client = create_http_client()?;
     let response = client
         .get(endpoint)
         .query(&[
-            ("select", "challenge_key"),
-            ("mode", mode_filter.as_str()),
+            ("select", "current_streak,max_streak,last_submission_key"),
             ("client_uuid", uuid_filter.as_str()),
-            ("daily_has_submission", "eq.true"),
-            ("order", "challenge_key.asc"),
-            ("limit", "2048"),
+            ("limit", "1"),
         ])
         .header("apikey", &config.anon_key)
         .header("Authorization", format!("Bearer {}", config.anon_key))
@@ -909,61 +924,17 @@ async fn fetch_remote_daily_badge_keys(
     }
 
     let rows = response
-        .json::<Vec<DailyBadgeKeyRow>>()
+        .json::<Vec<DailyStreakStateRow>>()
         .await
         .map_err(|error| format!("failed to decode daily badge response: {error}"))?;
-    Ok(rows.into_iter().map(|row| row.challenge_key).collect())
+    Ok(rows.into_iter().next())
 }
 
-fn compute_daily_badge_status(
-    accepted_challenge_keys: Vec<String>,
-    challenge_key: &str,
-) -> DailyBadgeStatus {
-    let mut normalized = accepted_challenge_keys
-        .into_iter()
-        .filter_map(|value| normalize_daily_challenge_key(&value).ok())
-        .filter(|value| is_valid_daily_challenge_key(value))
-        .collect::<Vec<_>>();
-
-    normalized.sort();
-    normalized.dedup();
-
-    if normalized.is_empty() {
-        return badge_status_from_streaks(0, 0);
-    }
-
-    let mut max_streak = 1_i64;
-    let mut current_run = 1_i64;
-    let mut latest_run = 1_i64;
-
-    for index in 1..normalized.len() {
-        if is_next_challenge_day(&normalized[index - 1], &normalized[index]) {
-            current_run += 1;
-        } else {
-            current_run = 1;
-        }
-        if current_run > max_streak {
-            max_streak = current_run;
-        }
-    }
-
-    for index in (1..normalized.len()).rev() {
-        if is_next_challenge_day(&normalized[index - 1], &normalized[index]) {
-            latest_run += 1;
-            continue;
-        }
-        break;
-    }
-
-    let latest_key = normalized.last().cloned().unwrap_or_default();
-    let current_streak =
-        if latest_key == challenge_key || is_next_challenge_day(&latest_key, challenge_key) {
-            latest_run
-        } else {
-            0
-        };
-
-    badge_status_from_streaks(current_streak, max_streak)
+fn is_current_streak_alive(last_submission_key: Option<&str>, challenge_key: &str) -> bool {
+    let Some(last_key) = last_submission_key else {
+        return false;
+    };
+    last_key == challenge_key || is_next_challenge_day(last_key, challenge_key)
 }
 
 fn badge_status_from_streaks(current_streak: i64, max_streak: i64) -> DailyBadgeStatus {
@@ -1004,10 +975,6 @@ fn is_next_challenge_day(previous: &str, next: &str) -> bool {
     let previous_day = challenge_key_to_day_number(previous);
     let next_day = challenge_key_to_day_number(next);
     matches!((previous_day, next_day), (Some(left), Some(right)) if right - left == 1)
-}
-
-fn is_valid_daily_challenge_key(challenge_key: &str) -> bool {
-    challenge_key_to_day_number(challenge_key).is_some()
 }
 
 fn challenge_key_to_day_number(challenge_key: &str) -> Option<i64> {
