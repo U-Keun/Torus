@@ -38,6 +38,8 @@ export interface ScoreEntry {
   score: number;
   level: number;
   date: string;
+  badgePower?: number | null;
+  badgeMaxStreak?: number | null;
   skillUsage: SkillUsageEntry[];
   isMe?: boolean;
   replayProof?: DailyReplayProof;
@@ -111,7 +113,12 @@ class LocalEntryStore {
 
   public async add(entry: ScoreEntry): Promise<void> {
     const scores = this.load();
-    scores.push({ ...entry, isMe: entry.isMe === true });
+    scores.push({
+      ...entry,
+      isMe: entry.isMe === true,
+      badgePower: normalizeOptionalBadgeMetric(entry.badgePower),
+      badgeMaxStreak: normalizeOptionalBadgeMetric(entry.badgeMaxStreak),
+    });
     this.save(this.sort(scores).slice(0, this.maxEntries));
   }
 
@@ -126,6 +133,10 @@ class LocalEntryStore {
         deduped.set(key, {
           ...row,
           isMe: current.isMe === true || row.isMe === true,
+          badgePower: normalizeOptionalBadgeMetric(row.badgePower)
+            ?? normalizeOptionalBadgeMetric(current.badgePower),
+          badgeMaxStreak: normalizeOptionalBadgeMetric(row.badgeMaxStreak)
+            ?? normalizeOptionalBadgeMetric(current.badgeMaxStreak),
           replayProof: row.replayProof ?? current.replayProof,
         });
         continue;
@@ -133,6 +144,8 @@ class LocalEntryStore {
       deduped.set(key, {
         ...row,
         isMe: row.isMe === true,
+        badgePower: normalizeOptionalBadgeMetric(row.badgePower),
+        badgeMaxStreak: normalizeOptionalBadgeMetric(row.badgeMaxStreak),
       });
     }
     this.save(this.sort([...deduped.values()]).slice(0, this.maxEntries));
@@ -157,6 +170,8 @@ class LocalEntryStore {
           score: entry.score,
           level: entry.level,
           date: entry.date,
+          badgePower: normalizeOptionalBadgeMetric(entry.badgePower),
+          badgeMaxStreak: normalizeOptionalBadgeMetric(entry.badgeMaxStreak),
           skillUsage: this.normalizeSkillUsage(entry.skillUsage),
           isMe: entry.isMe === true,
           replayProof: normalizeReplayProof(entry.replayProof),
@@ -197,6 +212,8 @@ class LocalEntryStore {
       typeof record.score === "number" &&
       typeof record.level === "number" &&
       typeof record.date === "string" &&
+      isOptionalBadgeMetric(record.badgePower) &&
+      isOptionalBadgeMetric(record.badgeMaxStreak) &&
       (typeof record.isMe === "boolean" || typeof record.isMe === "undefined") &&
       (
         typeof record.skillUsage === "undefined" ||
@@ -386,6 +403,7 @@ class TauriScoreboardStore implements ScoreboardStore {
     private readonly resolveDailyStore: DailyStoreResolver,
     private readonly supabaseUrl: string,
     private readonly supabaseAnonKey: string,
+    private readonly supabaseUserId: string | null,
     private readonly storage: Storage = window.localStorage,
   ) {}
 
@@ -395,6 +413,7 @@ class TauriScoreboardStore implements ScoreboardStore {
         limit,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
+        supabaseUserId: this.supabaseUserId,
       });
       const mapped = this.normalizeRemoteRows(rows);
       this.globalStore.merge(mapped);
@@ -416,6 +435,7 @@ class TauriScoreboardStore implements ScoreboardStore {
         replayProof,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
+        supabaseUserId: this.supabaseUserId,
       });
     } catch (error) {
       console.warn("Failed to save score through Tauri backend. Score kept locally.", error);
@@ -437,6 +457,7 @@ class TauriScoreboardStore implements ScoreboardStore {
         limit,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
+        supabaseUserId: this.supabaseUserId,
       });
       const mapped = this.normalizeRemoteRows(rows);
       this.resolveDailyStore(challengeKey).merge(mapped);
@@ -452,6 +473,7 @@ class TauriScoreboardStore implements ScoreboardStore {
       challengeKey,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
+      supabaseUserId: this.supabaseUserId,
     });
     return normalizeDailyAttemptStartResult(result, challengeKey);
   }
@@ -469,6 +491,7 @@ class TauriScoreboardStore implements ScoreboardStore {
       replayProof,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
+      supabaseUserId: this.supabaseUserId,
     });
     const normalized = normalizeDailyChallengeSubmitResult(result, challengeKey);
     if (normalized.accepted) {
@@ -490,6 +513,7 @@ class TauriScoreboardStore implements ScoreboardStore {
       attemptToken,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
+      supabaseUserId: this.supabaseUserId,
     });
     return normalizeDailyAttemptForfeitResult(result, challengeKey);
   }
@@ -499,6 +523,7 @@ class TauriScoreboardStore implements ScoreboardStore {
       challengeKey,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
+      supabaseUserId: this.supabaseUserId,
     });
     return normalizeDailyChallengeStatus(status, challengeKey);
   }
@@ -509,6 +534,7 @@ class TauriScoreboardStore implements ScoreboardStore {
       challengeKey: normalized,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
+      supabaseUserId: this.supabaseUserId,
     }).catch((error) => {
       console.warn("Failed to load daily badge status from Tauri backend. Using local cache.", error);
       const keys = readAcceptedDailyChallengeKeys(this.storage);
@@ -524,6 +550,8 @@ class TauriScoreboardStore implements ScoreboardStore {
         score: entry.score,
         level: entry.level,
         date: entry.date,
+        badgePower: normalizeOptionalBadgeMetric(entry.badgePower),
+        badgeMaxStreak: normalizeOptionalBadgeMetric(entry.badgeMaxStreak),
         skillUsage: this.normalizeSkillUsage(entry.skillUsage),
         isMe: entry.isMe === true,
       }));
@@ -539,6 +567,8 @@ class TauriScoreboardStore implements ScoreboardStore {
       typeof record.score === "number" &&
       typeof record.level === "number" &&
       typeof record.date === "string" &&
+      isOptionalBadgeMetric(record.badgePower) &&
+      isOptionalBadgeMetric(record.badgeMaxStreak) &&
       (typeof record.isMe === "boolean" || typeof record.isMe === "undefined") &&
       (
         typeof record.replayProof === "undefined" ||
@@ -630,6 +660,8 @@ export function createScoreboardStore(): ScoreboardStore {
   const resolveDailyStore = createDailyStoreResolver(window.localStorage, 100);
   const supabaseUrl = readEnv("VITE_SUPABASE_URL");
   const supabaseAnonKey = readEnv("VITE_SUPABASE_ANON_KEY");
+  const supabaseUserIdRaw = readEnv("VITE_SUPABASE_USER_ID");
+  const supabaseUserId = normalizeSupabaseUserId(supabaseUserIdRaw);
 
   if (!supabaseUrl || !supabaseAnonKey) {
     console.info("Supabase env is not configured. Global score sync is disabled.");
@@ -647,16 +679,49 @@ export function createScoreboardStore(): ScoreboardStore {
     resolveDailyStore,
     supabaseUrl,
     supabaseAnonKey,
+    supabaseUserId,
     window.localStorage,
   );
 }
 
-function readEnv(key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY"): string {
+function readEnv(
+  key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY" | "VITE_SUPABASE_USER_ID",
+): string {
   const value = import.meta.env[key];
   if (typeof value !== "string") {
     return "";
   }
   return value.trim();
+}
+
+function normalizeSupabaseUserId(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) {
+    return null;
+  }
+  if (!/^[0-9a-fA-F-]{36}$/.test(value)) {
+    console.warn("VITE_SUPABASE_USER_ID is set but not a valid UUID. Falling back to device identity.");
+    return null;
+  }
+  return value.toLowerCase();
+}
+
+function normalizeOptionalBadgeMetric(raw: unknown): number | null {
+  if (raw === null || typeof raw === "undefined") {
+    return null;
+  }
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+    return null;
+  }
+  return raw >= 0 ? raw : null;
+}
+
+function isOptionalBadgeMetric(raw: unknown): boolean {
+  return (
+    typeof raw === "undefined" ||
+    raw === null ||
+    normalizeOptionalBadgeMetric(raw) !== null
+  );
 }
 
 function normalizeSkillCommand(raw: string | null | undefined): string | null {

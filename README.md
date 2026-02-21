@@ -86,6 +86,7 @@ npm run tauri dev
 ```bash
 VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
 VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_PUBLIC_KEY
+VITE_SUPABASE_USER_ID=OPTIONAL_SUPABASE_AUTH_USER_UUID
 ```
 
 If these are not set, online sync is disabled and scoreboard works in local-only mode.
@@ -119,6 +120,7 @@ The schema includes:
 
 - `scores.player_name` (`text`)
 - `scores.client_uuid` (`text`)
+- `scores.user_id` (`uuid`, optional)
 - `scores.score` (`integer`)
 - `scores.level` (`integer`)
 - `scores.skill_usage` (`jsonb`, default `[]`)
@@ -129,6 +131,7 @@ The schema includes:
 - `scores.active_attempt_token` (`text`: active daily attempt token)
 - `scores.created_at` (`timestamptz`)
 - `daily_streak_states.client_uuid` (`text`)
+- `daily_streak_states.user_id` (`uuid`, optional)
 - `daily_streak_states.current_streak` (`integer`)
 - `daily_streak_states.max_streak` (`integer`)
 - `daily_streak_states.last_submission_key` (`text`: `YYYY-MM-DD` or `null`)
@@ -161,8 +164,9 @@ Default fetch size is top 10.
 - Online submission is optional.
 - Submitted scores include used skill metadata (`skill_usage`).
 - Tauri backend generates and stores a UUID at first run (`device-uuid-v1.txt` in app data dir).
+- If `VITE_SUPABASE_USER_ID` is set, submissions/reads use account owner key (`user-<uuid>`) for cross-device sync.
 - Classic mode online submission:
-  - Uses a single row per install via `(mode='classic', challenge_key='classic', client_uuid)`.
+  - Uses a single row per owner via `(mode='classic', challenge_key='classic', client_uuid)`.
   - If row does not exist: insert.
   - If row exists: update only if new score is better (or same score with higher level).
 - Daily Challenge mode online submission:

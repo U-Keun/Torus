@@ -41,6 +41,14 @@ pub struct ScoreEntry {
     pub score: i64,
     pub level: i64,
     pub date: String,
+    #[serde(rename = "badgePower", default, skip_serializing_if = "Option::is_none")]
+    pub badge_power: Option<i64>,
+    #[serde(
+        rename = "badgeMaxStreak",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub badge_max_streak: Option<i64>,
     #[serde(rename = "skillUsage", default)]
     pub skill_usage: Vec<SkillUsage>,
     #[serde(rename = "isMe", default)]
@@ -75,6 +83,13 @@ struct DailyStreakStateRow {
     max_streak: Option<i64>,
     #[serde(default)]
     last_submission_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DailyStreakLookupRow {
+    client_uuid: String,
+    #[serde(default)]
+    max_streak: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -200,6 +215,8 @@ struct DailyStartPayload<'a> {
     p_client_uuid: &'a str,
     p_challenge_key: &'a str,
     p_player_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p_user_id: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -207,6 +224,8 @@ struct DailyForfeitPayload<'a> {
     p_client_uuid: &'a str,
     p_challenge_key: &'a str,
     p_attempt_token: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p_user_id: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -218,6 +237,8 @@ struct VerifyScorePayload<'a> {
     attempt_token: Option<&'a str>,
     #[serde(rename = "clientUuid")]
     client_uuid: &'a str,
+    #[serde(rename = "userId", skip_serializing_if = "Option::is_none")]
+    user_id: Option<&'a str>,
     entry: &'a ScoreEntry,
     #[serde(rename = "replayProof")]
     replay_proof: &'a DailyReplayProof,
@@ -229,9 +250,11 @@ pub async fn fetch_global_scores(
     limit: Option<u32>,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let mut cache = read_cache(&app)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let device_uuid = match get_or_create_device_uuid(&app) {
         Ok(value) => Some(value),
         Err(error) => {
@@ -239,10 +262,11 @@ pub async fn fetch_global_scores(
             None
         }
     };
+    let owner_key = resolve_owner_key(device_uuid.as_deref(), normalized_user_id.as_deref());
     let config = normalize_supabase_config(supabase_url, supabase_anon_key);
 
     if let Some(config) = config {
-        match fetch_remote_scores(&config, top_limit, device_uuid.as_deref()).await {
+        match fetch_remote_scores(&config, top_limit, owner_key.as_deref()).await {
             Ok(remote_entries) => {
                 cache.extend(remote_entries.clone());
                 sort_and_dedupe(&mut cache);
@@ -267,11 +291,14 @@ pub async fn submit_global_score(
     replay_proof: DailyReplayProof,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<(), String> {
     let mut cache = read_cache(&app)?;
     let mut entry = sanitize_entry(entry)?;
     let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_key = resolve_required_owner_key(&device_uuid, normalized_user_id.as_deref());
     entry.is_me = true;
     cache.push(entry.clone());
     sort_and_dedupe(&mut cache);
@@ -279,8 +306,14 @@ pub async fn submit_global_score(
     write_cache(&app, &cache)?;
 
     if let Some(config) = normalize_supabase_config(supabase_url, supabase_anon_key) {
-        if let Err(error) =
-            submit_remote_global_score(&config, &entry, &replay_proof, &device_uuid).await
+        if let Err(error) = submit_remote_global_score(
+            &config,
+            &entry,
+            &replay_proof,
+            &owner_key,
+            normalized_user_id.as_deref(),
+        )
+        .await
         {
             eprintln!("Failed to save score to Supabase. Score kept locally. {error}");
         }
@@ -296,9 +329,11 @@ pub async fn fetch_daily_scores(
     limit: Option<u32>,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let device_uuid = match get_or_create_device_uuid(&app) {
@@ -308,11 +343,12 @@ pub async fn fetch_daily_scores(
             None
         }
     };
+    let owner_key = resolve_owner_key(device_uuid.as_deref(), normalized_user_id.as_deref());
     fetch_remote_daily_scores(
         &config,
         &normalized_challenge_key,
         top_limit,
-        device_uuid.as_deref(),
+        owner_key.as_deref(),
     )
     .await
 }
@@ -323,13 +359,16 @@ pub async fn fetch_daily_status(
     challenge_key: String,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<DailyStatus, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_key = resolve_required_owner_key(&device_uuid, normalized_user_id.as_deref());
     let remote_status =
-        fetch_remote_daily_attempts(&config, &normalized_challenge_key, &device_uuid).await?;
+        fetch_remote_daily_attempts(&config, &normalized_challenge_key, &owner_key).await?;
     Ok(build_daily_status(
         &normalized_challenge_key,
         remote_status.attempts_used,
@@ -343,12 +382,15 @@ pub async fn fetch_daily_badge_status(
     challenge_key: String,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<DailyBadgeStatus, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
-    let state = fetch_remote_daily_streak_state(&config, &device_uuid).await?;
+    let owner_key = resolve_required_owner_key(&device_uuid, normalized_user_id.as_deref());
+    let state = fetch_remote_daily_streak_state(&config, &owner_key).await?;
     let (current_streak, max_streak) = match state {
         Some(value) => {
             let stored_current = value.current_streak.unwrap_or(0).max(0);
@@ -372,12 +414,21 @@ pub async fn start_daily_attempt(
     challenge_key: String,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<DailyAttemptStartResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
-    start_remote_daily_attempt(&config, &normalized_challenge_key, &device_uuid).await
+    let owner_key = resolve_required_owner_key(&device_uuid, normalized_user_id.as_deref());
+    start_remote_daily_attempt(
+        &config,
+        &normalized_challenge_key,
+        &owner_key,
+        normalized_user_id.as_deref(),
+    )
+    .await
 }
 
 #[tauri::command]
@@ -389,13 +440,16 @@ pub async fn submit_daily_score(
     replay_proof: DailyReplayProof,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<DailySubmitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let entry = sanitize_entry(entry)?;
     let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
     let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_key = resolve_required_owner_key(&device_uuid, normalized_user_id.as_deref());
     let normalized_attempt_token = attempt_token.trim().to_string();
     if normalized_attempt_token.is_empty() {
         return Err("daily challenge attempt token is required".into());
@@ -406,7 +460,8 @@ pub async fn submit_daily_score(
         &normalized_attempt_token,
         &entry,
         &replay_proof,
-        &device_uuid,
+        &owner_key,
+        normalized_user_id.as_deref(),
     )
     .await
 }
@@ -418,8 +473,10 @@ pub async fn forfeit_daily_attempt(
     attempt_token: String,
     supabase_url: Option<String>,
     supabase_anon_key: Option<String>,
+    supabase_user_id: Option<String>,
 ) -> Result<DailyForfeitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_user_id = normalize_supabase_user_id(supabase_user_id)?;
     let config = normalize_supabase_config(supabase_url, supabase_anon_key)
         .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
     let normalized_attempt_token = attempt_token.trim().to_string();
@@ -427,11 +484,13 @@ pub async fn forfeit_daily_attempt(
         return Err("daily challenge attempt token is required".into());
     }
     let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_key = resolve_required_owner_key(&device_uuid, normalized_user_id.as_deref());
     forfeit_remote_daily_attempt(
         &config,
         &normalized_challenge_key,
         &normalized_attempt_token,
-        &device_uuid,
+        &owner_key,
+        normalized_user_id.as_deref(),
     )
     .await
 }
@@ -453,6 +512,33 @@ fn normalize_supabase_config(
         .filter(|value| !value.is_empty())?;
 
     Some(SupabaseConfig { url, anon_key })
+}
+
+fn normalize_supabase_user_id(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(value) = raw else {
+        return Ok(None);
+    };
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let parsed =
+        Uuid::parse_str(trimmed).map_err(|_| "supabase user id must be a valid UUID".to_string())?;
+    Ok(Some(parsed.to_string()))
+}
+
+fn resolve_owner_key(device_uuid: Option<&str>, supabase_user_id: Option<&str>) -> Option<String> {
+    if let Some(user_id) = supabase_user_id {
+        return Some(format!("user-{user_id}"));
+    }
+    device_uuid.map(|value| value.to_string())
+}
+
+fn resolve_required_owner_key(device_uuid: &str, supabase_user_id: Option<&str>) -> String {
+    match supabase_user_id {
+        Some(user_id) => format!("user-{user_id}"),
+        None => device_uuid.to_string(),
+    }
 }
 
 fn normalize_daily_challenge_key(raw: &str) -> Result<String, String> {
@@ -555,6 +641,8 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
         score: entry.score.max(0),
         level: entry.level.max(0),
         date: entry.date.trim().to_string(),
+        badge_power: None,
+        badge_max_streak: None,
         skill_usage,
         is_me: false,
     })
@@ -730,7 +818,7 @@ fn create_http_client() -> Result<reqwest::Client, String> {
 async fn fetch_remote_scores(
     config: &SupabaseConfig,
     limit: usize,
-    device_uuid: Option<&str>,
+    owner_key: Option<&str>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
     let client = create_http_client()?;
@@ -765,15 +853,36 @@ async fn fetch_remote_scores(
         .await
         .map_err(|error| format!("failed to decode supabase response: {error}"))?;
 
+    let owners = rows
+        .iter()
+        .filter_map(|row| row.client_uuid.clone())
+        .collect::<Vec<_>>();
+    let streak_map = match fetch_remote_streak_max_map(config, &owners).await {
+        Ok(map) => map,
+        Err(error) => {
+            eprintln!("Failed to load streak states for scoreboard rows. {error}");
+            HashMap::new()
+        }
+    };
+
     Ok(rows
         .into_iter()
         .map(|row| ScoreEntry {
+            badge_max_streak: row
+                .client_uuid
+                .as_ref()
+                .and_then(|value| streak_map.get(value).copied()),
+            badge_power: row
+                .client_uuid
+                .as_ref()
+                .and_then(|value| streak_map.get(value).copied())
+                .and_then(resolve_badge_power),
             user: row.player_name,
             score: row.score,
             level: row.level,
             date: row.created_at,
             skill_usage: row.skill_usage.unwrap_or_default(),
-            is_me: is_owned_by_device(row.client_uuid.as_deref(), device_uuid),
+            is_me: is_owned_by_owner(row.client_uuid.as_deref(), owner_key),
         })
         .collect())
 }
@@ -782,7 +891,7 @@ async fn fetch_remote_daily_scores(
     config: &SupabaseConfig,
     challenge_key: &str,
     limit: usize,
-    device_uuid: Option<&str>,
+    owner_key: Option<&str>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
@@ -818,35 +927,117 @@ async fn fetch_remote_daily_scores(
         .await
         .map_err(|error| format!("failed to decode supabase response: {error}"))?;
 
+    let owners = rows
+        .iter()
+        .filter_map(|row| row.client_uuid.clone())
+        .collect::<Vec<_>>();
+    let streak_map = match fetch_remote_streak_max_map(config, &owners).await {
+        Ok(map) => map,
+        Err(error) => {
+            eprintln!("Failed to load streak states for daily rows. {error}");
+            HashMap::new()
+        }
+    };
+
     Ok(rows
         .into_iter()
         .map(|row| ScoreEntry {
+            badge_max_streak: row
+                .client_uuid
+                .as_ref()
+                .and_then(|value| streak_map.get(value).copied()),
+            badge_power: row
+                .client_uuid
+                .as_ref()
+                .and_then(|value| streak_map.get(value).copied())
+                .and_then(resolve_badge_power),
             user: row.player_name,
             score: row.score,
             level: row.level,
             date: row.created_at,
             skill_usage: row.skill_usage.unwrap_or_default(),
-            is_me: is_owned_by_device(row.client_uuid.as_deref(), device_uuid),
+            is_me: is_owned_by_owner(row.client_uuid.as_deref(), owner_key),
         })
         .collect())
 }
 
-fn is_owned_by_device(row_client_uuid: Option<&str>, device_uuid: Option<&str>) -> bool {
+fn is_owned_by_owner(row_client_uuid: Option<&str>, owner_key: Option<&str>) -> bool {
     matches!(
-        (row_client_uuid, device_uuid),
-        (Some(row_uuid), Some(device_uuid)) if row_uuid == device_uuid
+        (row_client_uuid, owner_key),
+        (Some(row_uuid), Some(owner_key)) if row_uuid == owner_key
     )
+}
+
+async fn fetch_remote_streak_max_map(
+    config: &SupabaseConfig,
+    owner_keys: &[String],
+) -> Result<HashMap<String, i64>, String> {
+    let mut normalized = owner_keys
+        .iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    normalized.sort();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let endpoint = format!(
+        "{}/rest/v1/daily_streak_states",
+        config.url.trim_end_matches('/')
+    );
+    let owner_filter = format!("in.({})", normalized.iter().map(|value| quote_postgrest_text(value)).collect::<Vec<_>>().join(","));
+    let client = create_http_client()?;
+    let response = client
+        .get(endpoint)
+        .query(&[
+            ("select", "client_uuid,max_streak"),
+            ("client_uuid", owner_filter.as_str()),
+            ("limit", "2048"),
+        ])
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .send()
+        .await
+        .map_err(|error| format!("supabase streak state fetch failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!(
+            "supabase streak state fetch failed with {status}: {body}"
+        ));
+    }
+
+    let rows = response
+        .json::<Vec<DailyStreakLookupRow>>()
+        .await
+        .map_err(|error| format!("failed to decode streak state response: {error}"))?;
+    let mut map = HashMap::new();
+    for row in rows {
+        let max_streak = row.max_streak.unwrap_or(0).max(0);
+        if max_streak > 0 {
+            map.insert(row.client_uuid, max_streak);
+        }
+    }
+    Ok(map)
+}
+
+fn quote_postgrest_text(raw: &str) -> String {
+    let escaped = raw.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
 }
 
 async fn fetch_remote_daily_attempts(
     config: &SupabaseConfig,
     challenge_key: &str,
-    client_uuid: &str,
+    owner_key: &str,
 ) -> Result<RemoteDailyAttemptStatus, String> {
     let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
     let challenge_filter = format!("eq.{challenge_key}");
-    let uuid_filter = format!("eq.{client_uuid}");
+    let uuid_filter = format!("eq.{owner_key}");
     let client = create_http_client()?;
     let response = client
         .get(endpoint)
@@ -894,13 +1085,13 @@ async fn fetch_remote_daily_attempts(
 
 async fn fetch_remote_daily_streak_state(
     config: &SupabaseConfig,
-    client_uuid: &str,
+    owner_key: &str,
 ) -> Result<Option<DailyStreakStateRow>, String> {
     let endpoint = format!(
         "{}/rest/v1/daily_streak_states",
         config.url.trim_end_matches('/')
     );
-    let uuid_filter = format!("eq.{client_uuid}");
+    let uuid_filter = format!("eq.{owner_key}");
     let client = create_http_client()?;
     let response = client
         .get(endpoint)
@@ -1040,7 +1231,8 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 async fn start_remote_daily_attempt(
     config: &SupabaseConfig,
     challenge_key: &str,
-    client_uuid: &str,
+    owner_key: &str,
+    supabase_user_id: Option<&str>,
 ) -> Result<DailyAttemptStartResult, String> {
     let endpoint = format!(
         "{}/rest/v1/rpc/{}",
@@ -1048,9 +1240,10 @@ async fn start_remote_daily_attempt(
         DAILY_START_RPC_NAME
     );
     let payload = DailyStartPayload {
-        p_client_uuid: client_uuid,
+        p_client_uuid: owner_key,
         p_challenge_key: challenge_key,
         p_player_name: "Pending",
+        p_user_id: supabase_user_id,
     };
 
     let client = create_http_client()?;
@@ -1102,7 +1295,8 @@ async fn submit_remote_global_score(
     config: &SupabaseConfig,
     entry: &ScoreEntry,
     replay_proof: &DailyReplayProof,
-    client_uuid: &str,
+    owner_key: &str,
+    supabase_user_id: Option<&str>,
 ) -> Result<(), String> {
     let endpoint = format!(
         "{}/functions/v1/{}",
@@ -1113,7 +1307,8 @@ async fn submit_remote_global_score(
         mode: CLASSIC_MODE,
         challenge_key: CLASSIC_CHALLENGE_KEY,
         attempt_token: None,
-        client_uuid,
+        client_uuid: owner_key,
+        user_id: supabase_user_id,
         entry,
         replay_proof,
     };
@@ -1151,7 +1346,8 @@ async fn submit_remote_daily_score(
     attempt_token: &str,
     entry: &ScoreEntry,
     replay_proof: &DailyReplayProof,
-    client_uuid: &str,
+    owner_key: &str,
+    supabase_user_id: Option<&str>,
 ) -> Result<DailySubmitResult, String> {
     let endpoint = format!(
         "{}/functions/v1/{}",
@@ -1162,7 +1358,8 @@ async fn submit_remote_daily_score(
         mode: DAILY_MODE,
         challenge_key,
         attempt_token: Some(attempt_token),
-        client_uuid,
+        client_uuid: owner_key,
+        user_id: supabase_user_id,
         entry,
         replay_proof,
     };
@@ -1275,7 +1472,8 @@ async fn forfeit_remote_daily_attempt(
     config: &SupabaseConfig,
     challenge_key: &str,
     attempt_token: &str,
-    client_uuid: &str,
+    owner_key: &str,
+    supabase_user_id: Option<&str>,
 ) -> Result<DailyForfeitResult, String> {
     let endpoint = format!(
         "{}/rest/v1/rpc/{}",
@@ -1283,9 +1481,10 @@ async fn forfeit_remote_daily_attempt(
         DAILY_FORFEIT_RPC_NAME
     );
     let payload = DailyForfeitPayload {
-        p_client_uuid: client_uuid,
+        p_client_uuid: owner_key,
         p_challenge_key: challenge_key,
         p_attempt_token: attempt_token,
+        p_user_id: supabase_user_id,
     };
 
     let client = create_http_client()?;

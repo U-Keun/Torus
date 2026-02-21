@@ -1,6 +1,6 @@
 import type { Difficulty, GameSnapshot, PoleEntry, TorusCell } from "../game";
 import type { ScoreEntry } from "../scoreboard";
-import { renderGlobalRankTrophyIcon } from "./badge-icons";
+import { renderDailyBadgeIcon, renderGlobalRankTrophyIcon } from "./badge-icons";
 import type { TorusDom } from "./layout";
 
 export type GameStatus = "Paused" | "Running" | "Game Over";
@@ -94,17 +94,7 @@ export class TorusRenderer {
         const rankBadgeMarkup = showGlobalRankBadge && index < 3
           ? `<span class="score-rank-badge rank-${index + 1}" title="Global Rank #${index + 1}" aria-label="Global Rank ${index + 1}">${renderGlobalRankTrophyIcon(index + 1)}</span>`
           : "";
-        const meBadgeMarkup = (
-          showMeTag &&
-          row.isMe &&
-          meBadge
-        )
-          ? `<span class="score-me-badge" title="${escapeHtml(meBadge.title)}" aria-label="${escapeHtml(meBadge.title)}">${
-            meBadge.iconMarkup
-              ? meBadge.iconMarkup
-              : `<span class="score-me-badge-text">${escapeHtml(meBadge.label)}</span>`
-          }</span>`
-          : "";
+        const rowBadgeMarkup = resolveScoreRowBadgeMarkup(row, showMeTag, meBadge);
         const drawerBody = row.skillUsage.length === 0
           ? '<li class="empty">No skill information recorded.</li>'
           : row.skillUsage
@@ -138,7 +128,7 @@ export class TorusRenderer {
             })
             .join("");
         return `<li class="score-row${isExpanded ? " expanded" : ""}" data-score-index="${index}" role="button" tabindex="0" aria-expanded="${isExpanded ? "true" : "false"}">
-          <span class="name-wrap"><span class="name" title="${escapeHtml(row.user)}">${escapeHtml(row.user)}</span>${rankBadgeMarkup}${meTag}${meBadgeMarkup}</span>
+          <span class="name-wrap"><span class="name" title="${escapeHtml(row.user)}">${escapeHtml(row.user)}</span>${rankBadgeMarkup}${meTag}${rowBadgeMarkup}</span>
           <span class="point">${row.score}</span>
           <span class="meta">Lv.${row.level} · ${date}${skillMark}</span>
           <div class="score-drawer">
@@ -464,6 +454,53 @@ function formatDate(iso: string): string {
     return "-";
   }
   return date.toLocaleDateString();
+}
+
+function resolveScoreRowBadgeMarkup(
+  row: ScoreEntry,
+  showBadge: boolean,
+  meBadge: ScoreboardRenderOptions["meBadge"] | undefined,
+): string {
+  if (!showBadge) {
+    return "";
+  }
+
+  if (row.isMe && meBadge) {
+    return `<span class="score-me-badge" title="${escapeHtml(meBadge.title)}" aria-label="${escapeHtml(meBadge.title)}">${
+      meBadge.iconMarkup
+        ? meBadge.iconMarkup
+        : `<span class="score-me-badge-text">${escapeHtml(meBadge.label)}</span>`
+    }</span>`;
+  }
+
+  const power = normalizeNonNegativeInteger(row.badgePower);
+  if (power === null) {
+    return "";
+  }
+  const maxStreak = normalizeNonNegativeInteger(row.badgeMaxStreak) ?? (2 ** power);
+  const tierDays = 2 ** power;
+  const title = [
+    `Highest badge: 2^${power} (${formatDaysCount(tierDays)} tier)`,
+    `Best streak: ${formatDaysCount(maxStreak)}`,
+    "Rule: successful Daily submissions only, strict consecutive days",
+  ].join(" | ");
+  const iconMarkup = renderDailyBadgeIcon(power);
+  return `<span class="score-me-badge score-row-badge" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${
+    iconMarkup
+      ? iconMarkup
+      : `<span class="score-me-badge-text">2^${power}</span>`
+  }</span>`;
+}
+
+function normalizeNonNegativeInteger(raw: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+    return null;
+  }
+  return raw >= 0 ? raw : null;
+}
+
+function formatDaysCount(value: number): string {
+  return `${value} day${value === 1 ? "" : "s"}`;
 }
 
 function escapeHtml(value: string): string {

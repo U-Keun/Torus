@@ -2576,6 +2576,8 @@ function cloneScoreEntry(entry: ScoreEntry): ScoreEntry {
     score: entry.score,
     level: entry.level,
     date: entry.date,
+    badgePower: entry.badgePower ?? null,
+    badgeMaxStreak: entry.badgeMaxStreak ?? null,
     skillUsage: cloneSkillUsageList(entry.skillUsage),
     isMe: entry.isMe === true,
     replayProof: entry.replayProof ? {
