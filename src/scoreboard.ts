@@ -403,7 +403,6 @@ class TauriScoreboardStore implements ScoreboardStore {
     private readonly resolveDailyStore: DailyStoreResolver,
     private readonly supabaseUrl: string,
     private readonly supabaseAnonKey: string,
-    private readonly supabaseUserId: string | null,
     private readonly storage: Storage = window.localStorage,
   ) {}
 
@@ -413,7 +412,6 @@ class TauriScoreboardStore implements ScoreboardStore {
         limit,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
-        supabaseUserId: this.supabaseUserId,
       });
       const mapped = this.normalizeRemoteRows(rows);
       this.globalStore.merge(mapped);
@@ -435,7 +433,6 @@ class TauriScoreboardStore implements ScoreboardStore {
         replayProof,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
-        supabaseUserId: this.supabaseUserId,
       });
     } catch (error) {
       console.warn("Failed to save score through Tauri backend. Score kept locally.", error);
@@ -457,7 +454,6 @@ class TauriScoreboardStore implements ScoreboardStore {
         limit,
         supabaseUrl: this.supabaseUrl || null,
         supabaseAnonKey: this.supabaseAnonKey || null,
-        supabaseUserId: this.supabaseUserId,
       });
       const mapped = this.normalizeRemoteRows(rows);
       this.resolveDailyStore(challengeKey).merge(mapped);
@@ -473,7 +469,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       challengeKey,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
-      supabaseUserId: this.supabaseUserId,
     });
     return normalizeDailyAttemptStartResult(result, challengeKey);
   }
@@ -491,7 +486,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       replayProof,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
-      supabaseUserId: this.supabaseUserId,
     });
     const normalized = normalizeDailyChallengeSubmitResult(result, challengeKey);
     if (normalized.accepted) {
@@ -513,7 +507,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       attemptToken,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
-      supabaseUserId: this.supabaseUserId,
     });
     return normalizeDailyAttemptForfeitResult(result, challengeKey);
   }
@@ -523,7 +516,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       challengeKey,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
-      supabaseUserId: this.supabaseUserId,
     });
     return normalizeDailyChallengeStatus(status, challengeKey);
   }
@@ -534,7 +526,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       challengeKey: normalized,
       supabaseUrl: this.supabaseUrl || null,
       supabaseAnonKey: this.supabaseAnonKey || null,
-      supabaseUserId: this.supabaseUserId,
     }).catch((error) => {
       console.warn("Failed to load daily badge status from Tauri backend. Using local cache.", error);
       const keys = readAcceptedDailyChallengeKeys(this.storage);
@@ -660,8 +651,6 @@ export function createScoreboardStore(): ScoreboardStore {
   const resolveDailyStore = createDailyStoreResolver(window.localStorage, 100);
   const supabaseUrl = readEnv("VITE_SUPABASE_URL");
   const supabaseAnonKey = readEnv("VITE_SUPABASE_ANON_KEY");
-  const supabaseUserIdRaw = readEnv("VITE_SUPABASE_USER_ID");
-  const supabaseUserId = normalizeSupabaseUserId(supabaseUserIdRaw);
 
   if (!supabaseUrl || !supabaseAnonKey) {
     console.info("Supabase env is not configured. Global score sync is disabled.");
@@ -679,31 +668,18 @@ export function createScoreboardStore(): ScoreboardStore {
     resolveDailyStore,
     supabaseUrl,
     supabaseAnonKey,
-    supabaseUserId,
     window.localStorage,
   );
 }
 
 function readEnv(
-  key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY" | "VITE_SUPABASE_USER_ID",
+  key: "VITE_SUPABASE_URL" | "VITE_SUPABASE_ANON_KEY",
 ): string {
   const value = import.meta.env[key];
   if (typeof value !== "string") {
     return "";
   }
   return value.trim();
-}
-
-function normalizeSupabaseUserId(raw: string): string | null {
-  const value = raw.trim();
-  if (!value) {
-    return null;
-  }
-  if (!/^[0-9a-fA-F-]{36}$/.test(value)) {
-    console.warn("VITE_SUPABASE_USER_ID is set but not a valid UUID. Falling back to device identity.");
-    return null;
-  }
-  return value.toLowerCase();
 }
 
 function normalizeOptionalBadgeMetric(raw: unknown): number | null {

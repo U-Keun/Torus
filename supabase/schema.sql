@@ -279,6 +279,42 @@ drop function if exists public.submit_global_score(
   jsonb
 );
 
+drop function if exists public.start_daily_attempt(
+  text,
+  text,
+  text,
+  uuid
+);
+
+drop function if exists public.forfeit_daily_attempt(
+  text,
+  text,
+  text,
+  uuid
+);
+
+drop function if exists public.submit_daily_score(
+  text,
+  text,
+  text,
+  text,
+  integer,
+  integer,
+  timestamptz,
+  jsonb,
+  uuid
+);
+
+drop function if exists public.submit_global_score(
+  text,
+  text,
+  integer,
+  integer,
+  timestamptz,
+  jsonb,
+  uuid
+);
+
 create or replace function public.submit_global_score(
   p_client_uuid text,
   p_player_name text,
