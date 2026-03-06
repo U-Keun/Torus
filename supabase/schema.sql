@@ -293,6 +293,13 @@ drop function if exists public.forfeit_daily_attempt(
   uuid
 );
 
+drop function if exists public.rollback_daily_attempt(
+  text,
+  text,
+  text,
+  uuid
+);
+
 drop function if exists public.submit_daily_score(
   text,
   text,
@@ -854,6 +861,106 @@ begin
 end;
 $$;
 
+create or replace function public.rollback_daily_attempt(
+  p_client_uuid text,
+  p_challenge_key text,
+  p_attempt_token text
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_client_uuid text := trim(coalesce(p_client_uuid, ''));
+  v_challenge_key text := trim(coalesce(p_challenge_key, ''));
+  v_attempt_token text := trim(coalesce(p_attempt_token, ''));
+  v_existing_id bigint;
+  v_existing_attempts integer := 0;
+  v_existing_active_attempt_token text := null;
+  v_attempts_used integer := 0;
+  v_attempts_left integer := 0;
+  v_today_key text := to_char((now() at time zone 'utc')::date, 'YYYY-MM-DD');
+begin
+  if char_length(v_client_uuid) < 8 then
+    raise exception 'INVALID_CLIENT_UUID';
+  end if;
+
+  if v_attempt_token = '' then
+    raise exception 'INVALID_ATTEMPT_TOKEN';
+  end if;
+
+  if v_challenge_key !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$' then
+    raise exception 'INVALID_CHALLENGE_KEY';
+  end if;
+
+  if v_challenge_key <> v_today_key then
+    raise exception 'CHALLENGE_KEY_MISMATCH';
+  end if;
+
+  -- Retain only today's Daily rows. Older Daily rows are not used by the app.
+  delete from public.scores
+  where mode = 'daily'
+    and challenge_key <> v_today_key;
+
+  select id, attempts_used, active_attempt_token
+  into v_existing_id, v_existing_attempts, v_existing_active_attempt_token
+  from public.scores
+  where mode = 'daily'
+    and challenge_key = v_challenge_key
+    and client_uuid = v_client_uuid
+  limit 1
+  for update;
+
+  if not found then
+    return jsonb_build_object(
+      'accepted', false,
+      'challengeKey', v_challenge_key,
+      'attemptsUsed', 0,
+      'attemptsLeft', 3,
+      'maxAttempts', 3,
+      'canSubmit', true,
+      'hasActiveAttempt', false
+    );
+  end if;
+
+  v_attempts_used := least(3, greatest(0, coalesce(v_existing_attempts, 0)));
+  v_attempts_left := greatest(0, 3 - v_attempts_used);
+  v_existing_active_attempt_token := nullif(trim(coalesce(v_existing_active_attempt_token, '')), '');
+
+  if v_existing_active_attempt_token is null or v_existing_active_attempt_token <> v_attempt_token then
+    return jsonb_build_object(
+      'accepted', false,
+      'challengeKey', v_challenge_key,
+      'attemptsUsed', v_attempts_used,
+      'attemptsLeft', v_attempts_left,
+      'maxAttempts', 3,
+      'canSubmit', v_attempts_left > 0,
+      'hasActiveAttempt', v_existing_active_attempt_token is not null
+    );
+  end if;
+
+  v_attempts_used := greatest(0, v_attempts_used - 1);
+  v_attempts_left := greatest(0, 3 - v_attempts_used);
+
+  update public.scores
+  set
+    attempts_used = v_attempts_used,
+    active_attempt_token = null,
+    active_attempt_started_at = null
+  where id = v_existing_id;
+
+  return jsonb_build_object(
+    'accepted', true,
+    'challengeKey', v_challenge_key,
+    'attemptsUsed', v_attempts_used,
+    'attemptsLeft', v_attempts_left,
+    'maxAttempts', 3,
+    'canSubmit', v_attempts_left > 0,
+    'hasActiveAttempt', false
+  );
+end;
+$$;
+
 grant execute on function public.start_daily_attempt(
   text,
   text,
@@ -901,6 +1008,12 @@ revoke execute on function public.submit_daily_score(
 ) from anon, authenticated;
 
 grant execute on function public.forfeit_daily_attempt(
+  text,
+  text,
+  text
+) to anon, authenticated;
+
+grant execute on function public.rollback_daily_attempt(
   text,
   text,
   text

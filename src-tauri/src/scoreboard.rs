@@ -23,6 +23,7 @@ const DAILY_MAX_ATTEMPTS: i64 = 3;
 const DAILY_BADGE_MAX_POWER: i64 = 9;
 const DAILY_START_RPC_NAME: &str = "start_daily_attempt";
 const DAILY_FORFEIT_RPC_NAME: &str = "forfeit_daily_attempt";
+const DAILY_ROLLBACK_RPC_NAME: &str = "rollback_daily_attempt";
 const VERIFY_SCORE_FUNCTION_NAME: &str = "verify-score";
 const MAX_DAILY_REPLAY_EVENTS: usize = 20_000;
 const MAX_DAILY_REPLAY_FINAL_TIME: i64 = 2_000_000;
@@ -448,6 +449,31 @@ pub async fn forfeit_daily_attempt(
     }
     let device_uuid = get_or_create_device_uuid(&app)?;
     forfeit_remote_daily_attempt(
+        &config,
+        &normalized_challenge_key,
+        &normalized_attempt_token,
+        &device_uuid,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn rollback_daily_attempt(
+    app: AppHandle,
+    challenge_key: String,
+    attempt_token: String,
+    supabase_url: Option<String>,
+    supabase_anon_key: Option<String>,
+) -> Result<DailyForfeitResult, String> {
+    let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
+        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let normalized_attempt_token = attempt_token.trim().to_string();
+    if normalized_attempt_token.is_empty() {
+        return Err("daily challenge attempt token is required".into());
+    }
+    let device_uuid = get_or_create_device_uuid(&app)?;
+    rollback_remote_daily_attempt(
         &config,
         &normalized_challenge_key,
         &normalized_attempt_token,
@@ -1446,6 +1472,64 @@ Ensure /supabase/schema.sql has been applied (including RPC {DAILY_FORFEIT_RPC_N
         .json::<DailyForfeitResult>()
         .await
         .map_err(|error| format!("failed to decode daily forfeit response: {error}"))?;
+
+    let attempts_left = result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS);
+    Ok(DailyForfeitResult {
+        accepted: result.accepted,
+        challenge_key: challenge_key.to_string(),
+        attempts_used: result.attempts_used.clamp(0, DAILY_MAX_ATTEMPTS),
+        attempts_left,
+        max_attempts: DAILY_MAX_ATTEMPTS,
+        can_submit: attempts_left > 0,
+        has_active_attempt: result.has_active_attempt,
+    })
+}
+
+async fn rollback_remote_daily_attempt(
+    config: &SupabaseConfig,
+    challenge_key: &str,
+    attempt_token: &str,
+    owner_key: &str,
+) -> Result<DailyForfeitResult, String> {
+    let endpoint = format!(
+        "{}/rest/v1/rpc/{}",
+        config.url.trim_end_matches('/'),
+        DAILY_ROLLBACK_RPC_NAME
+    );
+    let payload = DailyForfeitPayload {
+        p_client_uuid: owner_key,
+        p_challenge_key: challenge_key,
+        p_attempt_token: attempt_token,
+    };
+
+    let client = create_http_client()?;
+    let response = client
+        .post(endpoint)
+        .header("apikey", &config.anon_key)
+        .header("Authorization", format!("Bearer {}", config.anon_key))
+        .json(&payload)
+        .send()
+        .await
+        .map_err(|error| format!("supabase daily rollback failed: {error}"))?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        let overload_hint = if body.contains("PGRST203") {
+            "\nHint: Duplicate RPC overloads detected. Drop legacy *_daily_attempt(..., uuid) overloads in Supabase."
+        } else {
+            ""
+        };
+        return Err(format!(
+            "supabase daily rollback failed with {status}: {body}{overload_hint}\n\
+Ensure /supabase/schema.sql has been applied (including RPC {DAILY_ROLLBACK_RPC_NAME})."
+        ));
+    }
+
+    let result = response
+        .json::<DailyForfeitResult>()
+        .await
+        .map_err(|error| format!("failed to decode daily rollback response: {error}"))?;
 
     let attempts_left = result.attempts_left.clamp(0, DAILY_MAX_ATTEMPTS);
     Ok(DailyForfeitResult {

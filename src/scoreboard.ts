@@ -96,6 +96,10 @@ export interface ScoreboardStore {
     challengeKey: string,
     attemptToken: string,
   ): Promise<DailyAttemptForfeitResult>;
+  rollbackDailyAttempt(
+    challengeKey: string,
+    attemptToken: string,
+  ): Promise<DailyAttemptForfeitResult>;
   getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus>;
   getDailyBadgeStatus(challengeKey: string): Promise<DailyBadgeStatus>;
 }
@@ -371,6 +375,27 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     });
   }
 
+  public rollbackDailyAttempt(
+    challengeKey: string,
+    attemptToken: string,
+  ): Promise<DailyAttemptForfeitResult> {
+    const normalized = normalizeChallengeKey(challengeKey);
+    const activeAttemptToken = readDailyActiveAttemptToken(this.storage, normalized);
+    const status = this.getLocalDailyStatus(normalized);
+    if (!activeAttemptToken || activeAttemptToken !== attemptToken) {
+      return Promise.resolve({
+        ...status,
+        accepted: false,
+      });
+    }
+    clearDailyActiveAttemptToken(this.storage, normalized);
+    this.setLocalDailyAttempts(normalized, Math.max(0, status.attemptsUsed - 1));
+    return Promise.resolve({
+      ...this.getLocalDailyStatus(normalized),
+      accepted: true,
+    });
+  }
+
   public getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus> {
     return Promise.resolve(this.getLocalDailyStatus(challengeKey));
   }
@@ -503,6 +528,19 @@ class TauriScoreboardStore implements ScoreboardStore {
     attemptToken: string,
   ): Promise<DailyAttemptForfeitResult> {
     const result = await invoke<DailyAttemptForfeitResult>("forfeit_daily_attempt", {
+      challengeKey,
+      attemptToken,
+      supabaseUrl: this.supabaseUrl || null,
+      supabaseAnonKey: this.supabaseAnonKey || null,
+    });
+    return normalizeDailyAttemptForfeitResult(result, challengeKey);
+  }
+
+  public async rollbackDailyAttempt(
+    challengeKey: string,
+    attemptToken: string,
+  ): Promise<DailyAttemptForfeitResult> {
+    const result = await invoke<DailyAttemptForfeitResult>("rollback_daily_attempt", {
       challengeKey,
       attemptToken,
       supabaseUrl: this.supabaseUrl || null,

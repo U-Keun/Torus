@@ -172,6 +172,7 @@ Default fetch size is top 10.
   - Client submits replay proof (seed + timed move log + final state).
   - Supabase Edge Function re-simulates the run and rejects mismatched score/level/time.
   - `attempts_used` increments even when score does not improve.
+  - If submission is rejected before accept (e.g. verify/token error), the client rolls back that attempt charge.
   - When daily best improves, that run is also auto-submitted to classic Global (same best-upsert rule).
   - `scores` keeps only today's Daily rows.
   - Daily streak state is kept in `daily_streak_states` (`current_streak`, `max_streak`, `last_submission_key`).

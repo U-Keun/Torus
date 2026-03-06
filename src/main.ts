@@ -1996,7 +1996,7 @@ function openGameOverModal(payload: GameOverPayload): void {
   savingGameOver = false;
   dom.gameOverSaveBtn.disabled = false;
   dom.gameOverSkipBtn.hidden = gameMode === "daily";
-  dom.gameOverSkipBtn.disabled = gameMode === "daily";
+  dom.gameOverSkipBtn.disabled = gameMode === "daily" && dom.gameOverSkipBtn.hidden;
   dom.gameOverScoreEl.textContent = String(payload.score);
   dom.gameOverLevelEl.textContent = String(payload.level);
   dom.gameOverNameEl.value = "";
@@ -2038,7 +2038,7 @@ async function saveGameOverScore(): Promise<void> {
       dom.gameOverBestHintEl.textContent = "Name is required to submit a Daily Challenge record.";
       savingGameOver = false;
       dom.gameOverSaveBtn.disabled = false;
-      dom.gameOverSkipBtn.disabled = true;
+      dom.gameOverSkipBtn.disabled = gameMode === "daily" && dom.gameOverSkipBtn.hidden;
       dom.gameOverNameEl.focus();
       return;
     }
@@ -2132,14 +2132,38 @@ async function saveGameOverScore(): Promise<void> {
     setStatus("Paused");
     clearSessionSnapshot();
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Failed to submit score.";
+    let message = error instanceof Error ? error.message : "Failed to submit score.";
+    if (gameMode === "daily") {
+      const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
+      const attemptToken = activeDailyAttemptToken;
+      if (attemptToken) {
+        try {
+          const rollbackResult = await scoreboardStore.rollbackDailyAttempt(challengeKey, attemptToken);
+          setDailyChallengeStatus(toDailyChallengeStatus(rollbackResult));
+          if (rollbackResult.accepted) {
+            activeDailyAttemptToken = null;
+            message = `${message} Attempt was restored.`;
+          } else {
+            message = `${message} Attempt restore failed.`;
+          }
+        } catch (rollbackError) {
+          console.warn("Failed to rollback daily attempt after rejected submission.", rollbackError);
+          message = `${message} Attempt restore failed.`;
+        }
+      }
+    }
     dom.gameOverBestHintEl.className = "gameover-hint warn";
     dom.gameOverBestHintEl.textContent = message;
+    if (gameMode === "daily") {
+      // On daily rejection/error, allow users to reset instead of getting stuck in modal.
+      dom.gameOverSkipBtn.hidden = false;
+      dom.gameOverSkipBtn.disabled = false;
+    }
   } finally {
     if (!dom.gameOverModalEl.classList.contains("hidden")) {
       savingGameOver = false;
       dom.gameOverSaveBtn.disabled = false;
-      dom.gameOverSkipBtn.disabled = gameMode === "daily";
+      dom.gameOverSkipBtn.disabled = gameMode === "daily" && dom.gameOverSkipBtn.hidden;
     }
   }
 }

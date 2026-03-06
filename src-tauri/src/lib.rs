@@ -14,6 +14,7 @@ pub fn run() {
             scoreboard::fetch_daily_badge_status,
             scoreboard::start_daily_attempt,
             scoreboard::forfeit_daily_attempt,
+            scoreboard::rollback_daily_attempt,
             scoreboard::submit_daily_score
         ])
         .run(tauri::generate_context!())
