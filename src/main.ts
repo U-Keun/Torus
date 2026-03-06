@@ -2019,6 +2019,20 @@ function closeGameOverModal(): void {
   dom.gameOverModalEl.classList.add("hidden");
 }
 
+function finalizeGameOverFlow(): void {
+  closeGameOverModal();
+  game.reset();
+  canResume = false;
+  currentRunSkillUsage = [];
+  currentRunReplaySeed = null;
+  currentRunReplayInputs = [];
+  currentRunReplayDifficulty = null;
+  activeDailyChallengeKey = null;
+  activeDailyAttemptToken = null;
+  setStatus("Paused");
+  clearSessionSnapshot();
+}
+
 async function saveGameOverScore(): Promise<void> {
   if (savingGameOver) {
     return;
@@ -2064,12 +2078,24 @@ async function saveGameOverScore(): Promise<void> {
     console.warn("Missing replay proof for this run. Global submission will be unavailable.", error);
   }
 
-  const personalEntry = runReplayProof ? { ...entry, replayProof: runReplayProof } : entry;
-  await scoreboardStore.addPersonal(personalEntry);
   const best = loadDeviceBestEntry();
-  const isDeviceBest = runReplayProof ? isBetterThanBest(personalEntry, best) : false;
-  if (isDeviceBest && personalEntry.replayProof) {
-    saveDeviceBestEntry(personalEntry);
+  const isDeviceBestByScore = isBetterThanBest(entry, best);
+  if (gameMode !== "daily" && !isDeviceBestByScore) {
+    // Non-best classic runs are treated as "skip": no persistence, just continue.
+    finalizeGameOverFlow();
+    return;
+  }
+  try {
+    await scoreboardStore.addPersonal(entry);
+  } catch (error) {
+    console.warn("Failed to save personal score locally.", error);
+  }
+  const isDeviceBest = runReplayProof ? isDeviceBestByScore : false;
+  if (isDeviceBest && runReplayProof) {
+    saveDeviceBestEntry({
+      ...entry,
+      replayProof: runReplayProof,
+    });
   }
 
   try {
@@ -2120,17 +2146,7 @@ async function saveGameOverScore(): Promise<void> {
     ) {
       await refreshScoreboard();
     }
-    closeGameOverModal();
-    game.reset();
-    canResume = false;
-    currentRunSkillUsage = [];
-    currentRunReplaySeed = null;
-    currentRunReplayInputs = [];
-    currentRunReplayDifficulty = null;
-    activeDailyChallengeKey = null;
-    activeDailyAttemptToken = null;
-    setStatus("Paused");
-    clearSessionSnapshot();
+    finalizeGameOverFlow();
   } catch (error) {
     let message = error instanceof Error ? error.message : "Failed to submit score.";
     if (gameMode === "daily") {
@@ -3118,7 +3134,7 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
   dom.gameOverSubmitDbEl.disabled = true;
   dom.gameOverBestHintEl.className = "gameover-hint warn";
   dom.gameOverBestHintEl.textContent = best
-    ? `Lower than this device best (${best.score} / Lv.${best.level}), so DB submission is disabled.`
+    ? `Lower than this device best (${best.score} / Lv.${best.level}), so this run will be skipped.`
     : "Current score is not your device best.";
 }
 

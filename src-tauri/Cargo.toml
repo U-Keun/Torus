@@ -1,6 +1,6 @@
 [package]
 name = "torus-app"
-version = "1.6.4"
+version = "1.6.5"
 description = "Torus game desktop app"
 authors = ["u-keunsong"]
 edition = "2021"

@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import {
   type DailyReplayProof,
-  normalizeReplayProof,
   type ReplayMove,
 } from "./replay-proof";
 export type { DailyReplayProof, ReplayInputEvent, ReplayMove } from "./replay-proof";
@@ -115,10 +114,18 @@ class LocalEntryStore {
     return this.sort(this.load()).slice(0, limit);
   }
 
+  public compactToLimit(): void {
+    this.save(this.sort(this.load()).slice(0, this.maxEntries));
+  }
+
   public async add(entry: ScoreEntry): Promise<void> {
     const scores = this.load();
     scores.push({
-      ...entry,
+      user: entry.user,
+      score: entry.score,
+      level: entry.level,
+      date: entry.date,
+      skillUsage: this.normalizeSkillUsage(entry.skillUsage),
       isMe: entry.isMe === true,
       badgePower: normalizeOptionalBadgeMetric(entry.badgePower),
       badgeMaxStreak: normalizeOptionalBadgeMetric(entry.badgeMaxStreak),
@@ -135,18 +142,25 @@ class LocalEntryStore {
       const current = deduped.get(key);
       if (current) {
         deduped.set(key, {
-          ...row,
+          user: row.user,
+          score: row.score,
+          level: row.level,
+          date: row.date,
+          skillUsage: this.normalizeSkillUsage(row.skillUsage),
           isMe: current.isMe === true || row.isMe === true,
           badgePower: normalizeOptionalBadgeMetric(row.badgePower)
             ?? normalizeOptionalBadgeMetric(current.badgePower),
           badgeMaxStreak: normalizeOptionalBadgeMetric(row.badgeMaxStreak)
             ?? normalizeOptionalBadgeMetric(current.badgeMaxStreak),
-          replayProof: row.replayProof ?? current.replayProof,
         });
         continue;
       }
       deduped.set(key, {
-        ...row,
+        user: row.user,
+        score: row.score,
+        level: row.level,
+        date: row.date,
+        skillUsage: this.normalizeSkillUsage(row.skillUsage),
         isMe: row.isMe === true,
         badgePower: normalizeOptionalBadgeMetric(row.badgePower),
         badgeMaxStreak: normalizeOptionalBadgeMetric(row.badgeMaxStreak),
@@ -178,7 +192,6 @@ class LocalEntryStore {
           badgeMaxStreak: normalizeOptionalBadgeMetric(entry.badgeMaxStreak),
           skillUsage: this.normalizeSkillUsage(entry.skillUsage),
           isMe: entry.isMe === true,
-          replayProof: normalizeReplayProof(entry.replayProof),
         }));
     } catch {
       return [];
@@ -186,7 +199,31 @@ class LocalEntryStore {
   }
 
   private save(scores: ScoreEntry[]): void {
-    this.storage.setItem(this.storageKey, JSON.stringify(scores));
+    let candidate = scores;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      try {
+        safeStorageSetItem(this.storage, this.storageKey, JSON.stringify(candidate));
+        return;
+      } catch (error) {
+        if (!isStorageQuotaExceededError(error)) {
+          console.warn(`Failed to persist ${this.storageKey}.`, error);
+          return;
+        }
+        if (candidate.length <= 1) {
+          break;
+        }
+        const shrinkTo = Math.floor(candidate.length * 0.6);
+        const nextSize = Math.max(1, Math.min(candidate.length - 1, shrinkTo));
+        candidate = candidate.slice(0, nextSize);
+      }
+    }
+
+    try {
+      const fallback = candidate.length > 0 ? JSON.stringify([candidate[0]]) : "[]";
+      safeStorageSetItem(this.storage, this.storageKey, fallback);
+    } catch (error) {
+      console.warn(`Failed to recover storage for ${this.storageKey}.`, error);
+    }
   }
 
   private sort(scores: ScoreEntry[]): ScoreEntry[] {
@@ -684,8 +721,11 @@ class TauriScoreboardStore implements ScoreboardStore {
 }
 
 export function createScoreboardStore(): ScoreboardStore {
-  const globalStore = new LocalEntryStore("torus-scores-v1", window.localStorage, 100);
-  const personalStore = new LocalEntryStore("torus-personal-scores-v1", window.localStorage, 100);
+  cleanupStaleDailyStorage(window.localStorage);
+  const globalStore = new LocalEntryStore("torus-scores-v1", window.localStorage, 10);
+  globalStore.compactToLimit();
+  const personalStore = new LocalEntryStore("torus-personal-scores-v1", window.localStorage, 10);
+  personalStore.compactToLimit();
   const resolveDailyStore = createDailyStoreResolver(window.localStorage, 100);
   const supabaseUrl = readEnv("VITE_SUPABASE_URL");
   const supabaseAnonKey = readEnv("VITE_SUPABASE_ANON_KEY");
@@ -748,9 +788,95 @@ function normalizeSkillCommand(raw: string | null | undefined): string | null {
 
 type DailyStoreResolver = (challengeKey: string) => LocalEntryStore;
 const DAILY_CHALLENGE_MAX_ATTEMPTS = 3;
+const DAILY_SCORES_STORAGE_PREFIX = "torus-daily-scores-v1:";
 const DAILY_ATTEMPTS_STORAGE_PREFIX = "torus-daily-attempts-v1:";
 const DAILY_ACTIVE_ATTEMPT_TOKEN_STORAGE_PREFIX = "torus-daily-active-attempt-token-v1:";
 const DAILY_BADGE_MAX_POWER = 9;
+const DAILY_STORAGE_PREFIXES: ReadonlyArray<string> = [
+  DAILY_SCORES_STORAGE_PREFIX,
+  DAILY_ATTEMPTS_STORAGE_PREFIX,
+  DAILY_ACTIVE_ATTEMPT_TOKEN_STORAGE_PREFIX,
+];
+
+function safeStorageSetItem(storage: Storage, key: string, value: string): void {
+  storage.setItem(key, value);
+}
+
+function isStorageQuotaExceededError(error: unknown): boolean {
+  if (typeof DOMException !== "undefined" && error instanceof DOMException) {
+    if (error.name === "QuotaExceededError" || error.name === "NS_ERROR_DOM_QUOTA_REACHED") {
+      return true;
+    }
+    if (error.code === 22 || error.code === 1014) {
+      return true;
+    }
+  }
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const record = error as Record<string, unknown>;
+  const name = typeof record.name === "string" ? record.name : "";
+  if (name === "QuotaExceededError" || name === "NS_ERROR_DOM_QUOTA_REACHED") {
+    return true;
+  }
+  const code = typeof record.code === "number" ? record.code : -1;
+  if (code === 22 || code === 1014) {
+    return true;
+  }
+  const message = typeof record.message === "string" ? record.message.toLowerCase() : "";
+  return message.includes("quota") && message.includes("exceed");
+}
+
+function extractDailyChallengeKeyFromStorageKey(storageKey: string): string | null {
+  for (const prefix of DAILY_STORAGE_PREFIXES) {
+    if (!storageKey.startsWith(prefix)) {
+      continue;
+    }
+    const challengeKey = normalizeChallengeKey(storageKey.slice(prefix.length));
+    return isValidChallengeKey(challengeKey) ? challengeKey : null;
+  }
+  return null;
+}
+
+function removeDailyStorageForChallenge(storage: Storage, challengeKey: string): void {
+  for (const prefix of DAILY_STORAGE_PREFIXES) {
+    try {
+      storage.removeItem(`${prefix}${challengeKey}`);
+    } catch {
+      // Ignore local storage failures.
+    }
+  }
+}
+
+function currentDailyChallengeKey(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function cleanupStaleDailyStorage(storage: Storage): void {
+  try {
+    const todayChallengeKey = currentDailyChallengeKey();
+    const dailyChallengeKeys = new Set<string>();
+    for (let index = 0; index < storage.length; index += 1) {
+      const rawKey = storage.key(index);
+      if (!rawKey) {
+        continue;
+      }
+      const challengeKey = extractDailyChallengeKeyFromStorageKey(rawKey);
+      if (challengeKey) {
+        dailyChallengeKeys.add(challengeKey);
+      }
+    }
+
+    for (const challengeKey of dailyChallengeKeys) {
+      if (challengeKey === todayChallengeKey) {
+        continue;
+      }
+      removeDailyStorageForChallenge(storage, challengeKey);
+    }
+  } catch {
+    // Ignore local storage failures.
+  }
+}
 
 function createDailyStoreResolver(
   storage: Storage,
@@ -759,12 +885,13 @@ function createDailyStoreResolver(
   const cache = new Map<string, LocalEntryStore>();
   return (challengeKey: string) => {
     const normalized = normalizeChallengeKey(challengeKey);
+    cleanupStaleDailyStorage(storage);
     const existing = cache.get(normalized);
     if (existing) {
       return existing;
     }
     const created = new LocalEntryStore(
-      `torus-daily-scores-v1:${normalized}`,
+      `${DAILY_SCORES_STORAGE_PREFIX}${normalized}`,
       storage,
       maxEntries,
     );
@@ -807,7 +934,12 @@ function readDailyAttempts(storage: Storage, challengeKey: string): number {
 
 function writeDailyAttempts(storage: Storage, challengeKey: string, attemptsUsed: number): void {
   try {
-    storage.setItem(dailyAttemptsStorageKey(challengeKey), String(clampAttempts(attemptsUsed)));
+    cleanupStaleDailyStorage(storage);
+    safeStorageSetItem(
+      storage,
+      dailyAttemptsStorageKey(challengeKey),
+      String(clampAttempts(attemptsUsed)),
+    );
   } catch {
     // Ignore local storage failures.
   }
@@ -837,7 +969,12 @@ function writeDailyActiveAttemptToken(
       storage.removeItem(dailyActiveAttemptTokenStorageKey(challengeKey));
       return;
     }
-    storage.setItem(dailyActiveAttemptTokenStorageKey(challengeKey), token);
+    cleanupStaleDailyStorage(storage);
+    safeStorageSetItem(
+      storage,
+      dailyActiveAttemptTokenStorageKey(challengeKey),
+      token,
+    );
   } catch {
     // Ignore local storage failures.
   }
