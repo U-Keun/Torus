@@ -406,6 +406,22 @@ button {
   transition: transform var(--motion-xs) ease, border-color var(--motion-xs) ease;
 }
 
+.button-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.button-loading::after {
+  content: "...";
+  display: inline-block;
+  width: 3ch;
+  overflow: hidden;
+  white-space: nowrap;
+  clip-path: inset(0 100% 0 0);
+  animation: score-loading-dots-reveal var(--motion-loading-dots) steps(4, end) infinite;
+}
+
 button:hover {
   border-color: rgba(255, 255, 255, 0.3);
   transform: translateY(-1px);
@@ -1078,6 +1094,15 @@ button:active {
   }
   100% {
     width: 3ch;
+  }
+}
+
+@keyframes score-loading-dots-reveal {
+  0% {
+    clip-path: inset(0 100% 0 0);
+  }
+  100% {
+    clip-path: inset(0 0 0 0);
   }
 }
 

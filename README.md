@@ -81,6 +81,20 @@ cp .env.example .env
 npm run tauri dev
 ```
 
+### Visual QA with Storybook
+
+```bash
+npm run storybook
+```
+
+Build a static Storybook bundle:
+
+```bash
+npm run build-storybook
+```
+
+Current UI stories cover score submission states, scoreboard views, Daily Challenge status, the key guide skills page, update/session/notice panels, and Theme/Skills modals.
+
 ### Environment variables
 
 ```bash

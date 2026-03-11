@@ -42,6 +42,7 @@ import {
   type Direction,
   type Skill,
 } from "./skills/types";
+import { setButtonLabel } from "./ui/button-loading";
 import { mountTorusLayout } from "./ui/layout";
 import { type GameStatus, TorusRenderer } from "./ui/renderer";
 import { renderDailyBadgeIcon } from "./ui/badge-icons";
@@ -90,6 +91,8 @@ const MIN_SUPPORTED_MAC_VERSION = String(import.meta.env.VITE_MIN_SUPPORTED_MAC_
 const UPDATE_CHECK_INTERVAL_MS = 1000 * 60 * 60 * 6;
 const SESSION_AUTOSAVE_INTERVAL_MS = 3000;
 const PERSONAL_SUBMIT_BUTTON_LABEL = "Submit";
+const GAMEOVER_SAVE_BUTTON_LABEL = "Save";
+const SUBMIT_CONFIRM_BUTTON_LABEL = "Submit";
 const GLOBAL_SCORE_TITLE = "GLOBAL TOP 10";
 const PERSONAL_SCORE_TITLE = "PERSONAL TOP 10";
 const DAILY_SCORE_TITLE = "DAILY CHALLENGE TOP 10";
@@ -1987,6 +1990,56 @@ function setThemeCustomMessage(
   }
 }
 
+function getGameOverSubmissionEligibility(payload: GameOverPayload): {
+  best: ScoreEntry | null;
+  hasReplayProof: boolean;
+  isDeviceBest: boolean;
+} {
+  const best = loadDeviceBestEntry();
+  if (currentRunReplaySeed === null) {
+    return {
+      best,
+      hasReplayProof: false,
+      isDeviceBest: false,
+    };
+  }
+  const candidate: ScoreEntry = {
+    user: "",
+    score: payload.score,
+    level: payload.level,
+    date: new Date().toISOString(),
+    skillUsage: [],
+  };
+  return {
+    best,
+    hasReplayProof: true,
+    isDeviceBest: isBetterThanBest(candidate, best),
+  };
+}
+
+function restoreGameOverSubmitToggleAvailability(payload: GameOverPayload): void {
+  if (gameMode === "daily") {
+    dom.gameOverSubmitDbEl.checked = false;
+    dom.gameOverSubmitDbEl.disabled = true;
+    return;
+  }
+  const eligibility = getGameOverSubmissionEligibility(payload);
+  if (!eligibility.hasReplayProof || !eligibility.isDeviceBest) {
+    dom.gameOverSubmitDbEl.checked = false;
+    dom.gameOverSubmitDbEl.disabled = true;
+    return;
+  }
+  dom.gameOverSubmitDbEl.disabled = false;
+}
+
+function showGameOverSubmissionLoading(message: string): void {
+  setButtonLabel(dom.gameOverSaveBtn, "Submitting", { loading: true });
+  dom.gameOverNameEl.disabled = true;
+  dom.gameOverSubmitDbEl.disabled = true;
+  dom.gameOverBestHintEl.className = "gameover-hint";
+  dom.gameOverBestHintEl.textContent = message;
+}
+
 function openGameOverModal(payload: GameOverPayload): void {
   closeSubmitConfirmModal();
   closeNoticeModal();
@@ -1995,11 +2048,13 @@ function openGameOverModal(payload: GameOverPayload): void {
   const lastUser = game.getLastUser().trim();
   savingGameOver = false;
   dom.gameOverSaveBtn.disabled = false;
+  setButtonLabel(dom.gameOverSaveBtn, GAMEOVER_SAVE_BUTTON_LABEL);
   dom.gameOverSkipBtn.hidden = gameMode === "daily";
   dom.gameOverSkipBtn.disabled = gameMode === "daily" && dom.gameOverSkipBtn.hidden;
   dom.gameOverScoreEl.textContent = String(payload.score);
   dom.gameOverLevelEl.textContent = String(payload.level);
   dom.gameOverNameEl.value = "";
+  dom.gameOverNameEl.disabled = false;
   dom.gameOverNameEl.placeholder = lastUser.length > 0
     ? lastUser
     : "Enter name (max 20 chars)";
@@ -2014,8 +2069,10 @@ function closeGameOverModal(): void {
   pendingGameOverPayload = null;
   pendingGameOverSkillUsage = [];
   dom.gameOverSaveBtn.disabled = false;
+  setButtonLabel(dom.gameOverSaveBtn, GAMEOVER_SAVE_BUTTON_LABEL);
   dom.gameOverSkipBtn.hidden = false;
   dom.gameOverSkipBtn.disabled = false;
+  dom.gameOverNameEl.disabled = false;
   dom.gameOverModalEl.classList.add("hidden");
 }
 
@@ -2102,6 +2159,7 @@ async function saveGameOverScore(): Promise<void> {
     let shouldRefreshGlobal = false;
     let shouldSubmitGlobalFromDaily = false;
     if (gameMode === "daily") {
+      showGameOverSubmissionLoading("Submitting your Daily score to Supabase...");
       const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
       const attemptToken = activeDailyAttemptToken;
       if (!attemptToken) {
@@ -2130,12 +2188,14 @@ async function saveGameOverScore(): Promise<void> {
       if (!runReplayProof) {
         throw new Error("Missing replay proof for global sync.");
       }
+      showGameOverSubmissionLoading("Syncing your score to GLOBAL TOP 10...");
       await submitEntryToGlobalAndRefresh(entry, runReplayProof);
       shouldRefreshGlobal = true;
     } else if (dom.gameOverSubmitDbEl.checked && isDeviceBest) {
       if (!runReplayProof) {
         throw new Error("Missing replay proof for global submission.");
       }
+      showGameOverSubmissionLoading("Submitting your score to GLOBAL TOP 10...");
       await submitEntryToGlobalAndRefresh(entry, runReplayProof);
       shouldRefreshGlobal = true;
     }
@@ -2179,7 +2239,12 @@ async function saveGameOverScore(): Promise<void> {
     if (!dom.gameOverModalEl.classList.contains("hidden")) {
       savingGameOver = false;
       dom.gameOverSaveBtn.disabled = false;
+      setButtonLabel(dom.gameOverSaveBtn, GAMEOVER_SAVE_BUTTON_LABEL);
       dom.gameOverSkipBtn.disabled = gameMode === "daily" && dom.gameOverSkipBtn.hidden;
+      dom.gameOverNameEl.disabled = false;
+      if (pendingGameOverPayload) {
+        restoreGameOverSubmitToggleAvailability(pendingGameOverPayload);
+      }
     }
   }
 }
@@ -2270,7 +2335,7 @@ async function openSubmitConfirmModal(): Promise<void> {
   pendingSubmitReplayProof = null;
   preparingPersonalSubmit = true;
   dom.submitConfirmConfirmBtn.disabled = true;
-  dom.submitConfirmConfirmBtn.textContent = "Submit";
+  setButtonLabel(dom.submitConfirmConfirmBtn, SUBMIT_CONFIRM_BUTTON_LABEL);
   dom.submitConfirmCancelBtn.disabled = false;
   dom.submitConfirmMessageEl.textContent = "Checking your device best record...";
   dom.submitConfirmModalEl.classList.remove("hidden");
@@ -2324,21 +2389,22 @@ async function confirmSubmitPersonalBest(): Promise<void> {
   submittingPersonalBest = true;
   dom.submitConfirmConfirmBtn.disabled = true;
   dom.submitConfirmCancelBtn.disabled = true;
-  dom.submitConfirmConfirmBtn.textContent = "Submitting";
+  setButtonLabel(dom.submitConfirmConfirmBtn, "Submitting", { loading: true });
+  dom.submitConfirmMessageEl.textContent = "Submitting your score to Supabase...";
   dom.submitPersonalBtn.disabled = true;
-  dom.submitPersonalBtn.textContent = "Submitting";
+  setButtonLabel(dom.submitPersonalBtn, "Submitting", { loading: true });
 
   try {
     await submitEntryToGlobalAndRefresh(pendingSubmitEntry, pendingSubmitReplayProof);
-    dom.submitPersonalBtn.textContent = "Submitted";
+    setButtonLabel(dom.submitPersonalBtn, "Submitted");
     closeSubmitConfirmModal(true);
   } catch (error) {
     console.warn("Failed to submit personal best score.", error);
-    dom.submitPersonalBtn.textContent = "Retry";
+    setButtonLabel(dom.submitPersonalBtn, "Retry");
     dom.submitConfirmMessageEl.textContent = "Submission failed. Please try again.";
     dom.submitConfirmConfirmBtn.disabled = false;
     dom.submitConfirmCancelBtn.disabled = false;
-    dom.submitConfirmConfirmBtn.textContent = "Retry";
+    setButtonLabel(dom.submitConfirmConfirmBtn, "Retry");
   } finally {
     submittingPersonalBest = false;
     window.setTimeout(() => {
@@ -2358,7 +2424,7 @@ function closeSubmitConfirmModal(force = false): void {
   preparingPersonalSubmit = false;
   dom.submitConfirmModalEl.classList.add("hidden");
   dom.submitConfirmConfirmBtn.disabled = true;
-  dom.submitConfirmConfirmBtn.textContent = "Submit";
+  setButtonLabel(dom.submitConfirmConfirmBtn, SUBMIT_CONFIRM_BUTTON_LABEL);
   dom.submitConfirmCancelBtn.disabled = false;
 }
 
@@ -2465,7 +2531,7 @@ function syncScoreboardViewUi(): void {
     ? "Daily Challenge runs are auto-submitted. Use GLOBAL/PERSONAL tabs for manual submit."
     : "";
   if (!submittingPersonalBest) {
-    dom.submitPersonalBtn.textContent = PERSONAL_SUBMIT_BUTTON_LABEL;
+    setButtonLabel(dom.submitPersonalBtn, PERSONAL_SUBMIT_BUTTON_LABEL);
     dom.submitPersonalBtn.disabled = dailyMode;
   }
 }
@@ -3089,8 +3155,7 @@ function isBetterThanBest(entry: ScoreEntry, best: ScoreEntry | null): boolean {
 
 function updateGameOverSubmissionHint(payload: GameOverPayload): void {
   if (gameMode === "daily") {
-    dom.gameOverSubmitDbEl.checked = false;
-    dom.gameOverSubmitDbEl.disabled = true;
+    restoreGameOverSubmitToggleAvailability(payload);
     dom.gameOverBestHintEl.className = "gameover-hint good";
     const challenge = getCurrentDailyChallenge();
     const status = dailyChallengeStatus && dailyChallengeStatus.challengeKey === challenge.key
@@ -3102,39 +3167,28 @@ function updateGameOverSubmissionHint(payload: GameOverPayload): void {
     return;
   }
 
-  if (currentRunReplaySeed === null) {
-    dom.gameOverSubmitDbEl.checked = false;
-    dom.gameOverSubmitDbEl.disabled = true;
+  const eligibility = getGameOverSubmissionEligibility(payload);
+  if (!eligibility.hasReplayProof) {
+    restoreGameOverSubmitToggleAvailability(payload);
     dom.gameOverBestHintEl.className = "gameover-hint warn";
     dom.gameOverBestHintEl.textContent =
       "Replay data is missing for this run, so GLOBAL submission is disabled.";
     return;
   }
 
-  const best = loadDeviceBestEntry();
-  const candidate: ScoreEntry = {
-    user: "",
-    score: payload.score,
-    level: payload.level,
-    date: new Date().toISOString(),
-    skillUsage: [],
-  };
-  const isDeviceBest = isBetterThanBest(candidate, best);
-
-  if (isDeviceBest) {
-    dom.gameOverSubmitDbEl.disabled = false;
+  if (eligibility.isDeviceBest) {
+    restoreGameOverSubmitToggleAvailability(payload);
     dom.gameOverBestHintEl.className = "gameover-hint good";
-    dom.gameOverBestHintEl.textContent = best
-      ? `New device best score. (Previous: ${best.score} / Lv.${best.level})`
+    dom.gameOverBestHintEl.textContent = eligibility.best
+      ? `New device best score. (Previous: ${eligibility.best.score} / Lv.${eligibility.best.level})`
       : "This is your first device record.";
     return;
   }
 
-  dom.gameOverSubmitDbEl.checked = false;
-  dom.gameOverSubmitDbEl.disabled = true;
+  restoreGameOverSubmitToggleAvailability(payload);
   dom.gameOverBestHintEl.className = "gameover-hint warn";
-  dom.gameOverBestHintEl.textContent = best
-    ? `Lower than this device best (${best.score} / Lv.${best.level}), so this run will be skipped.`
+  dom.gameOverBestHintEl.textContent = eligibility.best
+    ? `Lower than this device best (${eligibility.best.score} / Lv.${eligibility.best.level}), so this run will be skipped.`
     : "Current score is not your device best.";
 }
 
