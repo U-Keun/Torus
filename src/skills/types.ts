@@ -17,7 +17,6 @@ export interface Skill {
 
 export const MAX_SKILL_NAME_LENGTH = 20;
 export const MAX_SKILL_SEQUENCE_LENGTH = 40;
-export const DEFAULT_SKILL_STEP_DELAY_MS = 110;
 const MAX_SKILL_HOTKEY_CODE_LENGTH = 40;
 const KEYBOARD_CODE_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
 

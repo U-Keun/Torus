@@ -33,7 +33,6 @@ import {
 import { SkillRunner, type SkillRunnerState } from "./skills/runner";
 import { SkillStore } from "./skills/store";
 import {
-  DEFAULT_SKILL_STEP_DELAY_MS,
   MAX_SKILL_NAME_LENGTH,
   directionSequenceToLabel,
   normalizeSkillHotkeyInput,
@@ -151,7 +150,6 @@ const game = new TorusGame(
   (payload) => onGameOver(payload),
 );
 const skillRunner = new SkillRunner(dispatchMove, {
-  stepDelayMs: DEFAULT_SKILL_STEP_DELAY_MS,
   onStateChange: syncSkillRunnerUi,
 });
 game.setLastUser(loadLastUser());
@@ -1801,7 +1799,7 @@ function runSkillById(skillId: string, source: "ui" | "hotkey" = "ui"): void {
   }
 
   if (source === "ui" || isSkillsModalOpen()) {
-    setSkillFormMessage(`Running "${skill.name}".`, "good");
+    setSkillFormMessage(`Ran "${skill.name}".`, "good");
   }
   markSkillUsed(skill);
   syncSkillRunnerUi(skillRunner.getState());
