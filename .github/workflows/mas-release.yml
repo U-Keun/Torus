@@ -173,5 +173,5 @@ jobs:
           if-no-files-found: error
 
       - name: Upload to App Store Connect
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.upload }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.upload }}
         run: npm run mas:upload
