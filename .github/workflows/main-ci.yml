@@ -32,12 +32,23 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Install Dependencies
         run: npm ci
 
+      - name: Test Web App
+        run: npm run test
+
       - name: Build Web App
         run: npm run build
 
+      - name: Test Rust App
+        run: cargo test --manifest-path src-tauri/Cargo.toml
+
       - name: Cargo Check
         run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      - name: Rust Clippy
+        run: npm run clippy

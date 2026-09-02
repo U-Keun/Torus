@@ -95,6 +95,25 @@ npm run build-storybook
 
 Current UI stories cover score submission states, scoreboard views, Daily Challenge status, the key guide skills page, update/session/notice panels, and Theme/Skills modals.
 
+### Automated tests and checks
+
+Run the frontend unit tests once or in watch mode:
+
+```bash
+npm run test
+npm run test:watch
+```
+
+Run the Rust unit tests and static checks:
+
+```bash
+cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml
+npm run clippy
+```
+
+CI runs the one-shot frontend tests, frontend build, Rust tests, Cargo check, and Clippy.
+
 ### Environment variables
 
 ```bash
