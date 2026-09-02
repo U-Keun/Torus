@@ -21,6 +21,7 @@ src-tauri/gen/schemas/
 .env
 .env.*
 !.env.example
+/neon/.neon
 src-tauri/embedded.provisionprofile
 *.mobileprovision
 *.provisionprofile

@@ -38,8 +38,17 @@ jobs:
       - name: Install Dependencies
         run: npm ci
 
+      - name: Install Neon Backend Dependencies
+        run: npm ci --prefix neon
+
       - name: Test Web App
         run: npm run test
+
+      - name: Test Neon Backend
+        run: npm run test --prefix neon
+
+      - name: Type-check Neon Backend
+        run: npm run typecheck --prefix neon
 
       - name: Build Web App
         run: npm run build
