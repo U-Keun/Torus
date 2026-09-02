@@ -902,7 +902,7 @@ function createDailyStoreResolver(
 
 function normalizeChallengeKey(challengeKey: string): string {
   const trimmed = challengeKey.trim();
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+  if (isValidChallengeKey(trimmed)) {
     return trimmed;
   }
   return "unknown";
@@ -1086,10 +1086,11 @@ function readAcceptedDailyChallengeKeys(storage: Storage): string[] {
   return [...keys].sort((a, b) => compareChallengeKeys(a, b));
 }
 
-function computeDailyBadgeStatus(
+export function computeDailyBadgeStatus(
   acceptedChallengeKeys: ReadonlyArray<string>,
   challengeKey: string,
 ): DailyBadgeStatus {
+  const normalizedChallengeKey = normalizeChallengeKey(challengeKey);
   const normalized = acceptedChallengeKeys
     .map((value) => normalizeChallengeKey(value))
     .filter((value) => isValidChallengeKey(value))
@@ -1123,7 +1124,8 @@ function computeDailyBadgeStatus(
 
   const latestKey = normalized[normalized.length - 1];
   const currentStreak = (
-    latestKey === challengeKey || isNextChallengeDay(latestKey, challengeKey)
+    latestKey === normalizedChallengeKey ||
+    isNextChallengeDay(latestKey, normalizedChallengeKey)
   )
     ? latestRun
     : 0;
@@ -1175,17 +1177,14 @@ function isNextChallengeDay(previous: string, next: string): boolean {
 }
 
 function challengeKeyToUtcTimestamp(challengeKey: string): number | null {
-  if (!isValidChallengeKey(challengeKey)) {
+  const parsed = parseChallengeKey(challengeKey);
+  if (!parsed) {
     return null;
   }
-  const [yearRaw, monthRaw, dayRaw] = challengeKey.split("-");
-  const year = Number(yearRaw);
-  const month = Number(monthRaw);
-  const day = Number(dayRaw);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
-    return null;
-  }
-  return Date.UTC(year, month - 1, day);
+  const date = new Date(0);
+  date.setUTCFullYear(parsed.year, parsed.month - 1, parsed.day);
+  date.setUTCHours(0, 0, 0, 0);
+  return date.getTime();
 }
 
 function compareChallengeKeys(left: string, right: string): number {
@@ -1198,7 +1197,41 @@ function compareChallengeKeys(left: string, right: string): number {
 }
 
 function isValidChallengeKey(challengeKey: string): boolean {
-  return /^\d{4}-\d{2}-\d{2}$/.test(challengeKey);
+  return parseChallengeKey(challengeKey) !== null;
+}
+
+function parseChallengeKey(
+  challengeKey: string,
+): { year: number; month: number; day: number } | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(challengeKey)) {
+    return null;
+  }
+  const [yearRaw, monthRaw, dayRaw] = challengeKey.split("-");
+  const year = Number(yearRaw);
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1
+  ) {
+    return null;
+  }
+
+  const date = new Date(0);
+  date.setUTCFullYear(year, month - 1, day);
+  date.setUTCHours(0, 0, 0, 0);
+  if (
+    date.getUTCFullYear() !== year ||
+    date.getUTCMonth() !== month - 1 ||
+    date.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return { year, month, day };
 }
 
 function isEntryBetter(entry: ScoreEntry, best: ScoreEntry | null): boolean {

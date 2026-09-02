@@ -1140,7 +1140,7 @@ fn challenge_key_to_day_number(challenge_key: &str) -> Option<i64> {
     let year = parse_i32_digits(&challenge_key[0..4])?;
     let month = parse_i32_digits(&challenge_key[5..7])?;
     let day = parse_i32_digits(&challenge_key[8..10])?;
-    if month < 1 || month > 12 {
+    if !(1..=12).contains(&month) {
         return None;
     }
 
@@ -1541,4 +1541,57 @@ Ensure /supabase/schema.sql has been applied (including RPC {DAILY_ROLLBACK_RPC_
         can_submit: attempts_left > 0,
         has_active_attempt: result.has_active_attempt,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{challenge_key_to_day_number, is_next_challenge_day};
+
+    #[test]
+    fn challenge_days_are_consecutive_across_calendar_boundaries() {
+        let consecutive_pairs = [
+            ("2025-01-31", "2025-02-01"),
+            ("2025-04-30", "2025-05-01"),
+            ("2025-12-31", "2026-01-01"),
+        ];
+
+        for (previous, next) in consecutive_pairs {
+            assert!(
+                is_next_challenge_day(previous, next),
+                "expected {next} to follow {previous}"
+            );
+        }
+    }
+
+    #[test]
+    fn challenge_days_handle_leap_year_rules() {
+        assert!(is_next_challenge_day("2024-02-28", "2024-02-29"));
+        assert!(is_next_challenge_day("2024-02-29", "2024-03-01"));
+        assert!(is_next_challenge_day("2000-02-28", "2000-02-29"));
+        assert!(is_next_challenge_day("1900-02-28", "1900-03-01"));
+        assert_eq!(challenge_key_to_day_number("1900-02-29"), None);
+    }
+
+    #[test]
+    fn challenge_day_parser_rejects_invalid_dates_and_formats() {
+        let invalid_keys = [
+            "2023-02-29",
+            "2024-02-30",
+            "2025-04-31",
+            "2025-00-10",
+            "2025-13-10",
+            "2025-01-00",
+            "2025-1-01",
+            "2025/01/01",
+            "not-a-date",
+        ];
+
+        for challenge_key in invalid_keys {
+            assert_eq!(
+                challenge_key_to_day_number(challenge_key),
+                None,
+                "expected {challenge_key} to be rejected"
+            );
+        }
+    }
 }
