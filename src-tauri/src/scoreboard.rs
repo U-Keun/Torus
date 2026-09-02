@@ -566,7 +566,7 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
         let hotkey = usage
             .hotkey
             .map(|value| value.trim().chars().take(MAX_SKILL_HOTKEY_LEN).collect::<String>())
-            .and_then(|value| if value.is_empty() { None } else { Some(value) });
+            .filter(|value| !value.is_empty());
 
         let command = usage
             .command
@@ -577,7 +577,7 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
                     .take(MAX_SKILL_COMMAND_LEN)
                     .collect::<String>()
             })
-            .and_then(|value| if value.is_empty() { None } else { Some(value) });
+            .filter(|value| !value.is_empty());
 
         let key = format!(
             "{}::{}::{}",
