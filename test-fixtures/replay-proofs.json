@@ -1,0 +1,109 @@
+{
+  "proofs": [
+    {
+      "name": "difficulty-1-same-timestamp-skill-burst",
+      "version": 1,
+      "difficulty": 1,
+      "seed": 12345,
+      "finalTime": 411,
+      "finalScore": 0,
+      "finalLevel": 1,
+      "inputs": [
+        {
+          "time": 35,
+          "move": "right"
+        },
+        {
+          "time": 35,
+          "move": "down"
+        },
+        {
+          "time": 35,
+          "move": "up"
+        },
+        {
+          "time": 35,
+          "move": "left"
+        },
+        {
+          "time": 55,
+          "move": "right"
+        },
+        {
+          "time": 55,
+          "move": "down"
+        },
+        {
+          "time": 55,
+          "move": "left"
+        }
+      ]
+    },
+    {
+      "name": "difficulty-2",
+      "version": 1,
+      "difficulty": 2,
+      "seed": 987654321,
+      "finalTime": 431,
+      "finalScore": 900,
+      "finalLevel": 1,
+      "inputs": [
+        {
+          "time": 35,
+          "move": "right"
+        },
+        {
+          "time": 35,
+          "move": "down"
+        },
+        {
+          "time": 60,
+          "move": "left"
+        },
+        {
+          "time": 60,
+          "move": "down"
+        },
+        {
+          "time": 90,
+          "move": "right"
+        },
+        {
+          "time": 90,
+          "move": "up"
+        }
+      ]
+    },
+    {
+      "name": "difficulty-3",
+      "version": 1,
+      "difficulty": 3,
+      "seed": 4294967295,
+      "finalTime": 427,
+      "finalScore": 900,
+      "finalLevel": 1,
+      "inputs": [
+        {
+          "time": 34,
+          "move": "right"
+        },
+        {
+          "time": 34,
+          "move": "right"
+        },
+        {
+          "time": 34,
+          "move": "down"
+        },
+        {
+          "time": 70,
+          "move": "left"
+        },
+        {
+          "time": 70,
+          "move": "down"
+        }
+      ]
+    }
+  ]
+}
