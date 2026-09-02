@@ -42,7 +42,11 @@ pub struct ScoreEntry {
     pub score: i64,
     pub level: i64,
     pub date: String,
-    #[serde(rename = "badgePower", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "badgePower",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub badge_power: Option<i64>,
     #[serde(
         rename = "badgeMaxStreak",
@@ -94,9 +98,8 @@ struct DailyStreakLookupRow {
 }
 
 #[derive(Debug, Clone)]
-struct SupabaseConfig {
-    url: String,
-    anon_key: String,
+struct BackendApiConfig {
+    base_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -243,8 +246,7 @@ struct VerifyScorePayload<'a> {
 pub async fn fetch_global_scores(
     app: AppHandle,
     limit: Option<u32>,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let mut cache = read_cache(&app)?;
@@ -255,7 +257,7 @@ pub async fn fetch_global_scores(
             None
         }
     };
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key);
+    let config = normalize_backend_api_config(api_base_url);
 
     if let Some(config) = config {
         match fetch_remote_scores(&config, top_limit, device_uuid.as_deref()).await {
@@ -267,7 +269,7 @@ pub async fn fetch_global_scores(
                 return Ok(remote_entries);
             }
             Err(error) => {
-                eprintln!("Failed to load scores from Supabase. Using local cache. {error}");
+                eprintln!("Failed to load scores from the backend API. Using local cache. {error}");
             }
         }
     }
@@ -281,8 +283,7 @@ pub async fn submit_global_score(
     app: AppHandle,
     entry: ScoreEntry,
     replay_proof: DailyReplayProof,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<(), String> {
     let mut cache = read_cache(&app)?;
     let mut entry = sanitize_entry(entry)?;
@@ -294,16 +295,11 @@ pub async fn submit_global_score(
     truncate_cache(&mut cache);
     write_cache(&app, &cache)?;
 
-    if let Some(config) = normalize_supabase_config(supabase_url, supabase_anon_key) {
-        if let Err(error) = submit_remote_global_score(
-            &config,
-            &entry,
-            &replay_proof,
-            &device_uuid,
-        )
-        .await
+    if let Some(config) = normalize_backend_api_config(api_base_url) {
+        if let Err(error) =
+            submit_remote_global_score(&config, &entry, &replay_proof, &device_uuid).await
         {
-            eprintln!("Failed to save score to Supabase. Score kept locally. {error}");
+            eprintln!("Failed to save score to the backend API. Score kept locally. {error}");
         }
     }
 
@@ -315,13 +311,12 @@ pub async fn fetch_daily_scores(
     app: AppHandle,
     challenge_key: String,
     limit: Option<u32>,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let device_uuid = match get_or_create_device_uuid(&app) {
         Ok(value) => Some(value),
         Err(error) => {
@@ -342,12 +337,11 @@ pub async fn fetch_daily_scores(
 pub async fn fetch_daily_status(
     app: AppHandle,
     challenge_key: String,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<DailyStatus, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
     let remote_status =
         fetch_remote_daily_attempts(&config, &normalized_challenge_key, &device_uuid).await?;
@@ -362,24 +356,25 @@ pub async fn fetch_daily_status(
 pub async fn fetch_daily_badge_status(
     app: AppHandle,
     challenge_key: String,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<DailyBadgeStatus, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
     let state = fetch_remote_daily_streak_state(&config, &device_uuid).await?;
     let (current_streak, max_streak) = match state {
         Some(value) => {
             let stored_current = value.current_streak.unwrap_or(0).max(0);
             let stored_max = value.max_streak.unwrap_or(0).max(stored_current).max(0);
-            let effective_current =
-                if is_current_streak_alive(value.last_submission_key.as_deref(), &normalized_challenge_key) {
-                    stored_current
-                } else {
-                    0
-                };
+            let effective_current = if is_current_streak_alive(
+                value.last_submission_key.as_deref(),
+                &normalized_challenge_key,
+            ) {
+                stored_current
+            } else {
+                0
+            };
             (effective_current, stored_max)
         }
         None => (0, 0),
@@ -391,12 +386,11 @@ pub async fn fetch_daily_badge_status(
 pub async fn start_daily_attempt(
     app: AppHandle,
     challenge_key: String,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<DailyAttemptStartResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let device_uuid = get_or_create_device_uuid(&app)?;
     start_remote_daily_attempt(&config, &normalized_challenge_key, &device_uuid).await
 }
@@ -408,12 +402,11 @@ pub async fn submit_daily_score(
     attempt_token: String,
     entry: ScoreEntry,
     replay_proof: DailyReplayProof,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<DailySubmitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let entry = sanitize_entry(entry)?;
     let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
     let device_uuid = get_or_create_device_uuid(&app)?;
@@ -437,12 +430,11 @@ pub async fn forfeit_daily_attempt(
     app: AppHandle,
     challenge_key: String,
     attempt_token: String,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<DailyForfeitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let normalized_attempt_token = attempt_token.trim().to_string();
     if normalized_attempt_token.is_empty() {
         return Err("daily challenge attempt token is required".into());
@@ -462,12 +454,11 @@ pub async fn rollback_daily_attempt(
     app: AppHandle,
     challenge_key: String,
     attempt_token: String,
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
+    api_base_url: Option<String>,
 ) -> Result<DailyForfeitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_supabase_config(supabase_url, supabase_anon_key)
-        .ok_or_else(|| "daily challenge sync requires Supabase configuration".to_string())?;
+    let config = normalize_backend_api_config(api_base_url)
+        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let normalized_attempt_token = attempt_token.trim().to_string();
     if normalized_attempt_token.is_empty() {
         return Err("daily challenge attempt token is required".into());
@@ -487,18 +478,12 @@ fn normalize_limit(limit: Option<u32>) -> usize {
     raw.clamp(1, MAX_TOP_LIMIT as u32) as usize
 }
 
-fn normalize_supabase_config(
-    supabase_url: Option<String>,
-    supabase_anon_key: Option<String>,
-) -> Option<SupabaseConfig> {
-    let url = supabase_url
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-    let anon_key = supabase_anon_key
+fn normalize_backend_api_config(api_base_url: Option<String>) -> Option<BackendApiConfig> {
+    let base_url = api_base_url
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())?;
 
-    Some(SupabaseConfig { url, anon_key })
+    Some(BackendApiConfig { base_url })
 }
 
 fn normalize_daily_challenge_key(raw: &str) -> Result<String, String> {
@@ -565,7 +550,13 @@ fn sanitize_entry(entry: ScoreEntry) -> Result<ScoreEntry, String> {
 
         let hotkey = usage
             .hotkey
-            .map(|value| value.trim().chars().take(MAX_SKILL_HOTKEY_LEN).collect::<String>())
+            .map(|value| {
+                value
+                    .trim()
+                    .chars()
+                    .take(MAX_SKILL_HOTKEY_LEN)
+                    .collect::<String>()
+            })
             .filter(|value| !value.is_empty());
 
         let command = usage
@@ -776,42 +767,38 @@ fn create_http_client() -> Result<reqwest::Client, String> {
 }
 
 async fn fetch_remote_scores(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     limit: usize,
     owner_key: Option<&str>,
 ) -> Result<Vec<ScoreEntry>, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
+    let endpoint = format!("{}/rest/v1/scores", config.base_url.trim_end_matches('/'));
     let client = create_http_client()?;
-    let request = client
-        .get(endpoint)
-        .query(&[
-            (
-                "select",
-                "player_name,score,level,created_at,skill_usage,client_uuid",
-            ),
-            ("mode", "eq.classic"),
-            ("challenge_key", "eq.classic"),
-            ("order", "score.desc,level.desc,created_at.desc"),
-            ("limit", &limit.to_string()),
-        ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key));
+    let request = client.get(endpoint).query(&[
+        (
+            "select",
+            "player_name,score,level,created_at,skill_usage,client_uuid",
+        ),
+        ("mode", "eq.classic"),
+        ("challenge_key", "eq.classic"),
+        ("order", "score.desc,level.desc,created_at.desc"),
+        ("limit", &limit.to_string()),
+    ]);
 
     let response = request
         .send()
         .await
-        .map_err(|error| format!("supabase request failed: {error}"))?;
+        .map_err(|error| format!("backend API request failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("supabase request failed with {status}: {body}"));
+        return Err(format!("backend API request failed with {status}: {body}"));
     }
 
     let rows = response
         .json::<Vec<ScoreRow>>()
         .await
-        .map_err(|error| format!("failed to decode supabase response: {error}"))?;
+        .map_err(|error| format!("failed to decode backend API response: {error}"))?;
 
     let owners = rows
         .iter()
@@ -848,12 +835,12 @@ async fn fetch_remote_scores(
 }
 
 async fn fetch_remote_daily_scores(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     challenge_key: &str,
     limit: usize,
     owner_key: Option<&str>,
 ) -> Result<Vec<ScoreEntry>, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
+    let endpoint = format!("{}/rest/v1/scores", config.base_url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
     let challenge_filter = format!("eq.{challenge_key}");
     let client = create_http_client()?;
@@ -870,22 +857,22 @@ async fn fetch_remote_daily_scores(
             ("order", "score.desc,level.desc,created_at.desc"),
             ("limit", &limit.to_string()),
         ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .send()
         .await
-        .map_err(|error| format!("supabase daily fetch failed: {error}"))?;
+        .map_err(|error| format!("backend API daily fetch failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(format!("supabase daily fetch failed with {status}: {body}"));
+        return Err(format!(
+            "backend API daily fetch failed with {status}: {body}"
+        ));
     }
 
     let rows = response
         .json::<Vec<ScoreRow>>()
         .await
-        .map_err(|error| format!("failed to decode supabase response: {error}"))?;
+        .map_err(|error| format!("failed to decode backend API response: {error}"))?;
 
     let owners = rows
         .iter()
@@ -929,7 +916,7 @@ fn is_owned_by_owner(row_client_uuid: Option<&str>, owner_key: Option<&str>) -> 
 }
 
 async fn fetch_remote_streak_max_map(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     owner_keys: &[String],
 ) -> Result<HashMap<String, i64>, String> {
     let mut normalized = owner_keys
@@ -945,9 +932,16 @@ async fn fetch_remote_streak_max_map(
 
     let endpoint = format!(
         "{}/rest/v1/daily_streak_states",
-        config.url.trim_end_matches('/')
+        config.base_url.trim_end_matches('/')
     );
-    let owner_filter = format!("in.({})", normalized.iter().map(|value| quote_postgrest_text(value)).collect::<Vec<_>>().join(","));
+    let owner_filter = format!(
+        "in.({})",
+        normalized
+            .iter()
+            .map(|value| quote_postgrest_text(value))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     let client = create_http_client()?;
     let response = client
         .get(endpoint)
@@ -956,17 +950,15 @@ async fn fetch_remote_streak_max_map(
             ("client_uuid", owner_filter.as_str()),
             ("limit", "2048"),
         ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .send()
         .await
-        .map_err(|error| format!("supabase streak state fetch failed: {error}"))?;
+        .map_err(|error| format!("backend API streak state fetch failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "supabase streak state fetch failed with {status}: {body}"
+            "backend API streak state fetch failed with {status}: {body}"
         ));
     }
 
@@ -990,11 +982,11 @@ fn quote_postgrest_text(raw: &str) -> String {
 }
 
 async fn fetch_remote_daily_attempts(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     challenge_key: &str,
     owner_key: &str,
 ) -> Result<RemoteDailyAttemptStatus, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.url.trim_end_matches('/'));
+    let endpoint = format!("{}/rest/v1/scores", config.base_url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
     let challenge_filter = format!("eq.{challenge_key}");
     let uuid_filter = format!("eq.{owner_key}");
@@ -1008,33 +1000,31 @@ async fn fetch_remote_daily_attempts(
             ("client_uuid", uuid_filter.as_str()),
             ("limit", "1"),
         ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .send()
         .await
-        .map_err(|error| format!("supabase daily status fetch failed: {error}"))?;
+        .map_err(|error| format!("backend API daily status fetch failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "supabase daily status fetch failed with {status}: {body}"
+            "backend API daily status fetch failed with {status}: {body}"
         ));
     }
 
     let rows = response
         .json::<Vec<DailyAttemptsRow>>()
         .await
-        .map_err(|error| format!("failed to decode supabase response: {error}"))?;
-    let attempts = rows
-        .into_iter()
-        .next()
-        .unwrap_or(DailyAttemptsRow {
-            attempts_used: Some(0),
-            active_attempt_token: None,
-        });
+        .map_err(|error| format!("failed to decode backend API response: {error}"))?;
+    let attempts = rows.into_iter().next().unwrap_or(DailyAttemptsRow {
+        attempts_used: Some(0),
+        active_attempt_token: None,
+    });
     Ok(RemoteDailyAttemptStatus {
-        attempts_used: attempts.attempts_used.unwrap_or(0).clamp(0, DAILY_MAX_ATTEMPTS),
+        attempts_used: attempts
+            .attempts_used
+            .unwrap_or(0)
+            .clamp(0, DAILY_MAX_ATTEMPTS),
         has_active_attempt: attempts
             .active_attempt_token
             .as_deref()
@@ -1044,12 +1034,12 @@ async fn fetch_remote_daily_attempts(
 }
 
 async fn fetch_remote_daily_streak_state(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     owner_key: &str,
 ) -> Result<Option<DailyStreakStateRow>, String> {
     let endpoint = format!(
         "{}/rest/v1/daily_streak_states",
-        config.url.trim_end_matches('/')
+        config.base_url.trim_end_matches('/')
     );
     let uuid_filter = format!("eq.{owner_key}");
     let client = create_http_client()?;
@@ -1060,17 +1050,15 @@ async fn fetch_remote_daily_streak_state(
             ("client_uuid", uuid_filter.as_str()),
             ("limit", "1"),
         ])
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .send()
         .await
-        .map_err(|error| format!("supabase daily badge fetch failed: {error}"))?;
+        .map_err(|error| format!("backend API daily badge fetch failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "supabase daily badge fetch failed with {status}: {body}"
+            "backend API daily badge fetch failed with {status}: {body}"
         ));
     }
 
@@ -1189,13 +1177,13 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 }
 
 async fn start_remote_daily_attempt(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     challenge_key: &str,
     owner_key: &str,
 ) -> Result<DailyAttemptStartResult, String> {
     let endpoint = format!(
         "{}/rest/v1/rpc/{}",
-        config.url.trim_end_matches('/'),
+        config.base_url.trim_end_matches('/'),
         DAILY_START_RPC_NAME
     );
     let payload = DailyStartPayload {
@@ -1207,24 +1195,22 @@ async fn start_remote_daily_attempt(
     let client = create_http_client()?;
     let response = client
         .post(endpoint)
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("supabase daily start failed: {error}"))?;
+        .map_err(|error| format!("backend API daily start failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let overload_hint = if body.contains("PGRST203") {
-            "\nHint: Duplicate RPC overloads detected. Drop legacy *_daily_attempt(..., uuid) overloads in Supabase."
+            "\nHint: Complete the Neon migration by removing legacy *_daily_attempt(..., uuid) overloads."
         } else {
             ""
         };
         return Err(format!(
-            "supabase daily start failed with {status}: {body}{overload_hint}\n\
-Ensure /supabase/schema.sql has been applied (including RPC {DAILY_START_RPC_NAME})."
+            "backend API daily start failed with {status}: {body}{overload_hint}\n\
+Ensure the Neon migrations have been applied (including RPC {DAILY_START_RPC_NAME})."
         ));
     }
 
@@ -1255,14 +1241,14 @@ Ensure /supabase/schema.sql has been applied (including RPC {DAILY_START_RPC_NAM
 }
 
 async fn submit_remote_global_score(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     entry: &ScoreEntry,
     replay_proof: &DailyReplayProof,
     owner_key: &str,
 ) -> Result<(), String> {
     let endpoint = format!(
         "{}/functions/v1/{}",
-        config.url.trim_end_matches('/'),
+        config.base_url.trim_end_matches('/'),
         VERIFY_SCORE_FUNCTION_NAME
     );
     let payload = VerifyScorePayload {
@@ -1277,12 +1263,10 @@ async fn submit_remote_global_score(
     let client = create_http_client()?;
     let response = client
         .post(endpoint)
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("supabase global replay verify failed: {error}"))?;
+        .map_err(|error| format!("backend API global replay verify failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1293,8 +1277,8 @@ async fn submit_remote_global_score(
             .map(|value| format!("\nHint: {value}"))
             .unwrap_or_default();
         return Err(format!(
-            "supabase global replay verify failed with {status}: {summary}{hint_suffix}\n\
-Ensure /supabase/schema.sql and /supabase/functions/verify-score are deployed."
+            "backend API global replay verify failed with {status}: {summary}{hint_suffix}\n\
+Ensure the Neon migrations are applied and the backend verification route is deployed."
         ));
     }
 
@@ -1302,7 +1286,7 @@ Ensure /supabase/schema.sql and /supabase/functions/verify-score are deployed."
 }
 
 async fn submit_remote_daily_score(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     challenge_key: &str,
     attempt_token: &str,
     entry: &ScoreEntry,
@@ -1311,7 +1295,7 @@ async fn submit_remote_daily_score(
 ) -> Result<DailySubmitResult, String> {
     let endpoint = format!(
         "{}/functions/v1/{}",
-        config.url.trim_end_matches('/'),
+        config.base_url.trim_end_matches('/'),
         VERIFY_SCORE_FUNCTION_NAME
     );
     let payload = VerifyScorePayload {
@@ -1326,12 +1310,10 @@ async fn submit_remote_daily_score(
     let client = create_http_client()?;
     let response = client
         .post(endpoint)
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("supabase daily replay verify failed: {error}"))?;
+        .map_err(|error| format!("backend API daily replay verify failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
@@ -1342,8 +1324,8 @@ async fn submit_remote_daily_score(
             .map(|value| format!("\nHint: {value}"))
             .unwrap_or_default();
         return Err(format!(
-            "supabase daily replay verify failed with {status}: {summary}{hint_suffix}\n\
-Ensure /supabase/schema.sql and /supabase/functions/verify-score are deployed."
+            "backend API daily replay verify failed with {status}: {summary}{hint_suffix}\n\
+Ensure the Neon migrations are applied and the backend verification route is deployed."
         ));
     }
 
@@ -1405,7 +1387,7 @@ fn summarize_daily_verify_error_body(body: &str) -> String {
 
 fn daily_verify_error_hint(summary: &str) -> Option<&'static str> {
     if summary.contains("REPLAY_VERIFICATION_FAILED") {
-        return Some("Replay proof mismatch. Check function logs for reason/expected/actual.");
+        return Some("Replay proof mismatch. Check backend API logs for reason/expected/actual.");
     }
     if summary.contains("CHALLENGE_KEY_MISMATCH") {
         return Some("The UTC day changed during the run. Start a new Daily Challenge attempt.");
@@ -1413,29 +1395,31 @@ fn daily_verify_error_hint(summary: &str) -> Option<&'static str> {
     if summary.contains("INVALID_ATTEMPT_TOKEN") {
         return Some("The attempt token is stale. Start a new Daily Challenge attempt.");
     }
-    if summary.contains("MISSING_SUPABASE_ENV") {
-        return Some("Set SUPABASE_SERVICE_ROLE_KEY in Edge Function secrets.");
+    if summary.contains("MISSING_DATABASE_ENV") {
+        return Some("Configure the backend API database credentials.");
     }
     if summary.contains("RPC_SUBMIT_GLOBAL_SCORE_FAILED") {
-        return Some("Check submit_global_score RPC and service_role execute grant in schema.");
+        return Some(
+            "Check the submit_global_score RPC and its execute grant in the Neon migrations.",
+        );
     }
     if summary.contains("permission denied") {
         return Some(
-            "Grant execute on submit_daily_score/submit_global_score to service_role and redeploy schema.",
+            "Grant the backend database role execute access to submit_daily_score/submit_global_score in the Neon migrations.",
         );
     }
     None
 }
 
 async fn forfeit_remote_daily_attempt(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     challenge_key: &str,
     attempt_token: &str,
     owner_key: &str,
 ) -> Result<DailyForfeitResult, String> {
     let endpoint = format!(
         "{}/rest/v1/rpc/{}",
-        config.url.trim_end_matches('/'),
+        config.base_url.trim_end_matches('/'),
         DAILY_FORFEIT_RPC_NAME
     );
     let payload = DailyForfeitPayload {
@@ -1447,24 +1431,22 @@ async fn forfeit_remote_daily_attempt(
     let client = create_http_client()?;
     let response = client
         .post(endpoint)
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("supabase daily forfeit failed: {error}"))?;
+        .map_err(|error| format!("backend API daily forfeit failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let overload_hint = if body.contains("PGRST203") {
-            "\nHint: Duplicate RPC overloads detected. Drop legacy *_daily_attempt(..., uuid) overloads in Supabase."
+            "\nHint: Complete the Neon migration by removing legacy *_daily_attempt(..., uuid) overloads."
         } else {
             ""
         };
         return Err(format!(
-            "supabase daily forfeit failed with {status}: {body}{overload_hint}\n\
-Ensure /supabase/schema.sql has been applied (including RPC {DAILY_FORFEIT_RPC_NAME})."
+            "backend API daily forfeit failed with {status}: {body}{overload_hint}\n\
+Ensure the Neon migrations have been applied (including RPC {DAILY_FORFEIT_RPC_NAME})."
         ));
     }
 
@@ -1486,14 +1468,14 @@ Ensure /supabase/schema.sql has been applied (including RPC {DAILY_FORFEIT_RPC_N
 }
 
 async fn rollback_remote_daily_attempt(
-    config: &SupabaseConfig,
+    config: &BackendApiConfig,
     challenge_key: &str,
     attempt_token: &str,
     owner_key: &str,
 ) -> Result<DailyForfeitResult, String> {
     let endpoint = format!(
         "{}/rest/v1/rpc/{}",
-        config.url.trim_end_matches('/'),
+        config.base_url.trim_end_matches('/'),
         DAILY_ROLLBACK_RPC_NAME
     );
     let payload = DailyForfeitPayload {
@@ -1505,24 +1487,22 @@ async fn rollback_remote_daily_attempt(
     let client = create_http_client()?;
     let response = client
         .post(endpoint)
-        .header("apikey", &config.anon_key)
-        .header("Authorization", format!("Bearer {}", config.anon_key))
         .json(&payload)
         .send()
         .await
-        .map_err(|error| format!("supabase daily rollback failed: {error}"))?;
+        .map_err(|error| format!("backend API daily rollback failed: {error}"))?;
 
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
         let overload_hint = if body.contains("PGRST203") {
-            "\nHint: Duplicate RPC overloads detected. Drop legacy *_daily_attempt(..., uuid) overloads in Supabase."
+            "\nHint: Complete the Neon migration by removing legacy *_daily_attempt(..., uuid) overloads."
         } else {
             ""
         };
         return Err(format!(
-            "supabase daily rollback failed with {status}: {body}{overload_hint}\n\
-Ensure /supabase/schema.sql has been applied (including RPC {DAILY_ROLLBACK_RPC_NAME})."
+            "backend API daily rollback failed with {status}: {body}{overload_hint}\n\
+Ensure the Neon migrations have been applied (including RPC {DAILY_ROLLBACK_RPC_NAME})."
         ));
     }
 

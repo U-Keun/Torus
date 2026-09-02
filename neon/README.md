@@ -1,6 +1,6 @@
-# Torus Neon compatibility API
+# Torus Neon API
 
-This package hosts the Supabase-shaped HTTP routes used by the current Torus desktop client on one Neon Function.
+This package is the current online leaderboard backend for Torus. It runs on one Neon Function and stores rankings and Daily Challenge state in Neon Postgres.
 
 ## Prerequisites
 
@@ -37,13 +37,12 @@ Neon injects `DATABASE_URL`. The app does not return or log it. The pool is crea
 neon deploy
 ```
 
-Set the Torus backend base URL to the `torusapi` function invocation URL. During the compatibility phase, desktop builds use:
+Set the desktop app's public backend base URL to the deployed `torusapi` Function invocation URL without a trailing slash:
 
 ```text
-VITE_SUPABASE_URL=<torusapi invocation URL without a trailing slash>
-VITE_SUPABASE_ANON_KEY=neon-compat
+VITE_API_BASE_URL=<torusapi invocation URL without a trailing slash>
 ```
 
-The second value is only a nonsecret compatibility placeholder for existing clients. Never put a Neon connection string or database password in a `VITE_*` variable. The existing `/rest/v1/...` and `/functions/v1/verify-score` paths are appended unchanged. No secret is declared in `neon.ts`.
+`VITE_API_BASE_URL` is the only public frontend backend setting. It is not a secret. Never put a Neon connection string, `DATABASE_URL`, or database password in a `VITE_*` variable. No secret is declared in `neon.ts`.
 
-This first compatibility layer is public, like the prior anonymous Supabase reads and RPC calls. Score writes still require a valid replay, and daily state changes are guarded by attempt tokens in Postgres.
+The API intentionally keeps the established `/rest/v1/...` and `/functions/v1/verify-score` routes for compatibility with existing server behavior. This public API replaces the prior anonymous backend access. Score writes still require a valid replay, and daily state changes are guarded by attempt tokens in Postgres.

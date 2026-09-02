@@ -633,7 +633,7 @@ async function startDailyChallengeGame(): Promise<void> {
     saveSessionSnapshot(true);
   } catch (error) {
     console.warn("Failed to start daily challenge attempt.", error);
-    openNoticeModal("Daily Challenge", "Failed to verify Daily Challenge attempts. Check network/Supabase and try again.");
+    openNoticeModal("Daily Challenge", "Failed to verify Daily Challenge attempts. Check the network or online backend and try again.");
   } finally {
     startingDailyChallenge = false;
   }
@@ -2157,7 +2157,7 @@ async function saveGameOverScore(): Promise<void> {
     let shouldRefreshGlobal = false;
     let shouldSubmitGlobalFromDaily = false;
     if (gameMode === "daily") {
-      showGameOverSubmissionLoading("Submitting your Daily score to Supabase...");
+      showGameOverSubmissionLoading("Submitting your Daily score to the online leaderboard...");
       const challengeKey = activeDailyChallengeKey ?? getCurrentDailyChallenge().key;
       const attemptToken = activeDailyAttemptToken;
       if (!attemptToken) {
@@ -2388,7 +2388,7 @@ async function confirmSubmitPersonalBest(): Promise<void> {
   dom.submitConfirmConfirmBtn.disabled = true;
   dom.submitConfirmCancelBtn.disabled = true;
   setButtonLabel(dom.submitConfirmConfirmBtn, "Submitting", { loading: true });
-  dom.submitConfirmMessageEl.textContent = "Submitting your score to Supabase...";
+  dom.submitConfirmMessageEl.textContent = "Submitting your score to the online leaderboard...";
   dom.submitPersonalBtn.disabled = true;
   setButtonLabel(dom.submitPersonalBtn, "Submitting", { loading: true });
 

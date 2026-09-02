@@ -101,7 +101,7 @@ export const DailyChallengeSubmitting = {
       skipHidden: true,
       skipDisabled: true,
       inputDisabled: true,
-      hint: "Submitting your Daily score to Supabase...",
+      hint: "Submitting your Daily score to the online leaderboard...",
       hintTone: "info",
     }),
 };
@@ -136,7 +136,7 @@ export const ManualSubmitSubmitting = {
       confirmLoading: true,
       confirmDisabled: true,
       cancelDisabled: true,
-      message: "Submitting your score to Supabase...",
+      message: "Submitting your score to the online leaderboard...",
     }),
 };
 

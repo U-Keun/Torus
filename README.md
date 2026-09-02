@@ -34,9 +34,9 @@ Torus is a Tauri + TypeScript desktop reimplementation of the Emacs Lisp `torus`
 - Click a score row to slide open used skill details (skill name + command).
 - Import skills from expanded `GLOBAL`/`DAILY` records directly into personal skill set.
 - `Keys` card supports two pages: basic controls and current personal skill hotkeys/sequences.
-- Optional online score submission (Supabase).
+- Optional score submission to the online leaderboard.
 - Per-install UUID in Tauri backend: one online record per device, updated only when score is better.
-- Local fallback cache if network/Supabase is unavailable.
+- Local fallback cache if the network or online backend is unavailable.
 
 ## Controls
 
@@ -61,7 +61,7 @@ Keyboard input uses both `event.key` and `event.code`, so game controls still wo
 - Frontend: Vite + TypeScript
 - Desktop runtime: Tauri v2
 - Backend commands: Rust (Tauri `invoke`)
-- Online ranking: Supabase REST API (`scores` table)
+- Online ranking: Neon Postgres served by a Neon Function compatibility API
 - Local persistence: browser localStorage + Tauri app data cache
 
 ## Quick Start
@@ -76,10 +76,10 @@ Keyboard input uses both `event.key` and `event.code`, so game controls still wo
 
 ```bash
 npm install
-cp .env.example .env
-# Fill .env values
-npm run tauri dev
+VITE_API_BASE_URL=https://YOUR_TORUS_API_HOST npm run tauri dev
 ```
+
+Omit `VITE_API_BASE_URL` to run with local-only scoreboards.
 
 ### Visual QA with Storybook
 
@@ -114,79 +114,40 @@ npm run clippy
 
 CI runs the one-shot frontend tests, frontend build, Rust tests, Cargo check, and Clippy.
 
-### Environment variables
+### Backend configuration
+
+Desktop builds use one public frontend variable:
 
 ```bash
-VITE_SUPABASE_URL=https://YOUR_PROJECT_ID.supabase.co
-VITE_SUPABASE_ANON_KEY=YOUR_SUPABASE_ANON_PUBLIC_KEY
+VITE_API_BASE_URL=https://YOUR_TORUS_API_HOST
 ```
 
-If these are not set, online sync is disabled and scoreboard works in local-only mode.
+Use the `torusapi` Neon Function invocation URL without a trailing slash. This is an HTTP API base URL, not a database connection string or secret. If it is not set, online sync is disabled and the scoreboards use local-only mode.
 
-## Supabase Setup
+For local development, set the variable in your shell or a local untracked Vite environment file, then run `npm run tauri dev`.
 
-1. Create a Supabase project.
-2. Open SQL Editor and run `/supabase/schema.sql`.
-3. Copy project URL and anon key into `.env`.
-4. Deploy Edge Function `/supabase/functions/verify-score`.
-5. Set function secret `SUPABASE_SERVICE_ROLE_KEY`.
-6. Start the app and submit a score.
+## Neon Backend Setup
 
-Example:
+The current online backend lives in [`neon/`](./neon). It stores rankings and Daily Challenge state in Neon Postgres and exposes them through a Neon Function.
 
-```bash
-supabase functions deploy verify-score --no-verify-jwt
-supabase secrets set SUPABASE_SERVICE_ROLE_KEY=YOUR_SERVICE_ROLE_KEY
-```
+1. Create a Neon project in `aws-us-east-2` (the Functions beta region).
+2. Install the Neon CLI separately with `npm install -g neon@latest`.
+3. In `neon/`, run `npm install` and `neon link`.
+4. Apply `neon/migrations/0001_initial.sql` with the Neon SQL Editor or `psql` using the branch's unpooled migration connection.
+5. Run `neon dev`, then verify the printed Function URL with `GET /health`.
+6. Run `npm test` and `npm run typecheck` in `neon/`.
+7. Deploy with `neon deploy`.
+8. Configure desktop builds with `VITE_API_BASE_URL` set to the deployed `torusapi` invocation URL.
 
-### Edge Function migration note
+Neon injects `DATABASE_URL` into the Function runtime. Never expose that value, a Neon connection string, or a database password through a `VITE_*` variable.
 
-- Edge Function names are immutable in practice. To "rename", deploy a new function name.
-- Recommended rollout:
-  1. Deploy `verify-score`
-  2. Release client versions that call `verify-score`
-  3. Keep `verify-daily-score` temporarily for older clients
-  4. Remove `verify-daily-score` after old versions are no longer active
+The compatibility API keeps the existing server routes, including `/rest/v1/...` and `/functions/v1/verify-score`, so deployed clients and server behavior can migrate without a route change. Score writes require a valid replay. Daily state changes also require attempt tokens.
 
-The schema includes:
+For more backend development and deployment details, see [`neon/README.md`](./neon/README.md).
 
-- `scores.player_name` (`text`)
-- `scores.client_uuid` (`text`)
-- `scores.score` (`integer`)
-- `scores.level` (`integer`)
-- `scores.skill_usage` (`jsonb`, default `[]`)
-- `scores.mode` (`text`: `classic` | `daily`)
-- `scores.challenge_key` (`text`: `classic` or `YYYY-MM-DD`)
-- `scores.attempts_used` (`integer`: daily only, `1..3`)
-- `scores.daily_has_submission` (`boolean`: daily ranking visibility)
-- `scores.active_attempt_token` (`text`: active daily attempt token)
-- `scores.created_at` (`timestamptz`)
-- `daily_streak_states.client_uuid` (`text`)
-- `daily_streak_states.current_streak` (`integer`)
-- `daily_streak_states.max_streak` (`integer`)
-- `daily_streak_states.last_submission_key` (`text`: `YYYY-MM-DD` or `null`)
-- `submit_daily_score(...)` RPC function (server-enforced daily attempts)
-- `verify-score` Edge Function (server replay verification for Global and Daily)
+### Legacy Supabase reference
 
-RLS behavior:
-
-- Direct `insert/update` on `scores` from anon/authenticated clients is blocked.
-- Global/Daily writes are accepted only after Edge Function replay verification.
-- `submit_global_score(...)` and `submit_daily_score(...)` RPC execute permissions are restricted to `service_role`.
-
-### Secrets policy
-
-- It is safe and recommended to commit `/supabase/schema.sql` and `/supabase/functions/**`.
-- Never commit secrets (`SUPABASE_SERVICE_ROLE_KEY`, DB password, JWT secrets, private keys, `.env*` values).
-- Keep runtime secrets only in Supabase secrets / CI secrets / local untracked env files.
-
-Ranking query order is:
-
-1. `score DESC`
-2. `level DESC`
-3. `created_at DESC`
-
-Default fetch size is top 10.
+The [`supabase/`](./supabase) directory is retained only as a legacy implementation and migration reference. It is not the current backend setup. Do not use its URL, anonymous key, Edge Function, or schema instructions for new deployments.
 
 ## Score Submission Model
 
@@ -203,7 +164,7 @@ Default fetch size is top 10.
   - Daily runs are auto-submitted (no opt-out).
   - Server RPC enforces maximum 3 attempts per UTC day.
   - Client submits replay proof (seed + timed move log + final state).
-  - Supabase Edge Function re-simulates the run and rejects mismatched score/level/time.
+  - The online backend re-simulates the run and rejects mismatched score/level/time.
   - `attempts_used` increments even when score does not improve.
   - If submission is rejected before accept (e.g. verify/token error), the client rolls back that attempt charge.
   - When daily best improves, that run is also auto-submitted to classic Global (same best-upsert rule).
@@ -229,4 +190,5 @@ cargo check --manifest-path src-tauri/Cargo.toml
 - `src/ui/renderer.ts`: rendering logic (playfield, HUD, cards)
 - `src/ui/theme.ts`: theme handling
 - `src-tauri/src/scoreboard.rs`: backend fetch/submit/cache/UUID logic
-- `supabase/schema.sql`: DB schema and RLS policies
+- `neon/`: current Neon database migration and Function backend
+- `supabase/`: legacy backend reference only
