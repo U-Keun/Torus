@@ -6,10 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "xcodeproj:gen": "bash scripts/generate-xcodeproj.sh",
     "xcodeproj:open": "bash scripts/generate-xcodeproj.sh --open",
     "mas:check": "bash scripts/macos-appstore-release.sh check",
@@ -28,9 +31,11 @@
     "@storybook/addon-docs": "^10.2.17",
     "@storybook/html-vite": "^10.2.17",
     "@tauri-apps/cli": "^2",
+    "jsdom": "^26.1.0",
     "storybook": "^10.2.17",
     "typescript": "~5.6.2",
-    "vite": "^6.0.3"
+    "vite": "^6.0.3",
+    "vitest": "^4.1.8"
   },
   "overrides": {
     "rollup": "4.59.0"
