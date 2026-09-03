@@ -49,15 +49,10 @@ app.post("/v1/installations/enroll", async (c) => {
   if (!isInstallationId(body.installationId)) {
     throw new HttpError("INVALID_INSTALLATION_ID", 400);
   }
-  const clientUuid = requiredString(body.clientUuid, "INVALID_CLIENT_UUID", 8, 80);
   const secret = decodeInstallationSecret(body.secret);
   if (!secret) throw new HttpError("INVALID_INSTALLATION_SECRET", 400);
 
-  const result = await enrollInstallation(
-    body.installationId.toLowerCase(),
-    clientUuid,
-    secret,
-  );
+  const result = await enrollInstallation(body.installationId.toLowerCase(), secret);
   if (result === "conflict") return c.json({ error: "INSTALLATION_CONFLICT" }, 409);
   return c.json({
     installationId: body.installationId.toLowerCase(),

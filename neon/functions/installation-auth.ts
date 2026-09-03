@@ -57,10 +57,12 @@ export function installationEnrollmentEnabled(value = process.env.INSTALLATION_E
 
 export async function enrollInstallation(
   installationId: string,
-  clientUuid: string,
   secret: Uint8Array,
   runQuery: Query = query,
 ): Promise<"created" | "existing" | "conflict"> {
+  // A public legacy client UUID cannot prove ownership. Use the fresh,
+  // unguessable installation ID as the authenticated owner identity instead.
+  const clientUuid = installationId;
   const digest = installationSecretDigest(secret);
   const inserted = await runQuery<{ secret_digest: Buffer }>(
     `INSERT INTO public.installation_credentials (installation_id, client_uuid, secret_digest)

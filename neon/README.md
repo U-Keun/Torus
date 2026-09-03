@@ -58,12 +58,11 @@ Enrollment is closed by default. `POST /v1/installations/enroll` behaves like an
 ```json
 {
   "installationId": "123e4567-e89b-42d3-a456-426614174000",
-  "clientUuid": "<existing device UUID>",
   "secret": "<32 random bytes encoded as unpadded base64url>"
 }
 ```
 
-The credential permanently binds the installation ID to the existing device UUID. Repeating the same ID, device UUID, and secret is idempotent. Reusing either identifier with different enrollment data returns `409`. The server stores only `HMAC-SHA256(INSTALLATION_TOKEN_PEPPER, secret)` and never returns the secret.
+The fresh installation ID also becomes the authenticated `clientUuid`. Existing public client UUIDs cannot prove ownership, so they are retained only for local matching of historical leaderboard rows and are never claimable through enrollment. Repeating the same ID and secret is idempotent; reusing the ID with a different secret returns `409`. The server stores only `HMAC-SHA256(INSTALLATION_TOKEN_PEPPER, secret)` and never returns the secret.
 
 Authenticated requests use this exact authorization form:
 
@@ -79,3 +78,5 @@ X-Torus-Request-Id: 223e4567-e89b-42d3-a456-426614174001
 ```
 
 Each `(installationId, requestId)` pair is consumed atomically. Reuse, stale metadata, malformed credentials, and incorrect credentials must all produce the same `401 {"error":"UNAUTHORIZED"}` response. The helpers are implemented for the coordinated rollout, but existing compatibility routes are intentionally not protected yet.
+
+This is bearer authentication and relies on HTTPS plus native secret storage. The timestamp and request ID reject an exact duplicate request ID; they do not sign the method, path, or body, and possession of the bearer secret grants the installation's authority. Nonce consumption and the protected database mutation must run in one database transaction so a failed operation rolls the nonce back.

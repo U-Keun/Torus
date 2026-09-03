@@ -33,7 +33,6 @@ describe("Torus Neon compatibility API", () => {
     process.env.INSTALLATION_ENROLLMENT_ENABLED = "true";
     process.env.INSTALLATION_TOKEN_PEPPER = "test-only-pepper";
     const installationId = "123e4567-e89b-42d3-a456-426614174000";
-    const clientUuid = "device-12345678";
     queryMock.mockImplementationOnce(async (_text: string, values: unknown[]) => [
       { secret_digest: values[2] },
     ]);
@@ -42,7 +41,6 @@ describe("Torus Neon compatibility API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         installationId,
-        clientUuid,
         secret: Buffer.alloc(32, 7).toString("base64url"),
       }),
     });
@@ -51,7 +49,7 @@ describe("Torus Neon compatibility API", () => {
     expect(queryMock.mock.calls[0][0]).toContain("ON CONFLICT DO NOTHING");
     expect(queryMock.mock.calls[0][1]).toEqual([
       installationId,
-      clientUuid,
+      installationId,
       expect.any(Buffer),
     ]);
   });
@@ -67,7 +65,6 @@ describe("Torus Neon compatibility API", () => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         installationId: "123e4567-e89b-42d3-a456-426614174000",
-        clientUuid: "device-12345678",
         secret: Buffer.alloc(32, 7).toString("base64url"),
       }),
     });

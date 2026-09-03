@@ -14,7 +14,7 @@ import {
 } from "./installation-auth.js";
 
 const installationId = "123e4567-e89b-42d3-a456-426614174000";
-const clientUuid = "device-12345678";
+const clientUuid = installationId;
 const requestId = "223e4567-e89b-42d3-a456-426614174001";
 const secret = Buffer.alloc(32, 7);
 const encodedSecret = secret.toString("base64url");
@@ -65,7 +65,7 @@ describe("installation credential primitives", () => {
     const existingQuery = vi.fn()
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ installation_id: installationId, client_uuid: clientUuid, secret_digest: digest }]);
-    await expect(enrollInstallation(installationId, clientUuid, secret, existingQuery))
+    await expect(enrollInstallation(installationId, secret, existingQuery))
       .resolves.toBe("existing");
 
     const conflictQuery = vi.fn()
@@ -75,7 +75,7 @@ describe("installation credential primitives", () => {
         client_uuid: clientUuid,
         secret_digest: installationSecretDigest(Buffer.alloc(32, 8)),
       }]);
-    await expect(enrollInstallation(installationId, clientUuid, secret, conflictQuery))
+    await expect(enrollInstallation(installationId, secret, conflictQuery))
       .resolves.toBe("conflict");
   });
 });
