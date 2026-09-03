@@ -10,10 +10,37 @@ if (!connectionString) {
 export const pool = new Pool({ connectionString, max: 5 });
 attachDatabasePool(pool);
 
-export async function query<T extends QueryResultRow>(
+export type DatabaseQuery = <T extends QueryResultRow>(
+  text: string,
+  values?: readonly unknown[],
+) => Promise<T[]>;
+
+export const query: DatabaseQuery = async <T extends QueryResultRow>(
   text: string,
   values: readonly unknown[] = [],
-): Promise<T[]> {
+): Promise<T[]> => {
   const result = await pool.query<T>(text, [...values]);
   return result.rows;
+};
+
+export async function transaction<T>(work: (runQuery: DatabaseQuery) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  const runQuery: DatabaseQuery = async <R extends QueryResultRow>(
+    text: string,
+    values: readonly unknown[] = [],
+  ): Promise<R[]> => {
+    const result = await client.query<R>(text, [...values]);
+    return result.rows;
+  };
+  try {
+    await client.query("BEGIN");
+    const result = await work(runQuery);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }

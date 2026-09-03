@@ -7,6 +7,7 @@ import {
   authenticateInstallation,
   decodeInstallationSecret,
   enrollInstallation,
+  installationAuthEnforced,
   installationEnrollmentEnabled,
   installationSecretDigest,
   installationUnauthorizedResponse,
@@ -26,6 +27,7 @@ beforeEach(() => {
 afterEach(() => {
   delete process.env.INSTALLATION_TOKEN_PEPPER;
   delete process.env.INSTALLATION_ENROLLMENT_ENABLED;
+  delete process.env.INSTALLATION_AUTH_ENFORCED;
 });
 
 describe("installation credential primitives", () => {
@@ -58,6 +60,15 @@ describe("installation credential primitives", () => {
     expect(installationEnrollmentEnabled()).toBe(false);
     process.env.INSTALLATION_ENROLLMENT_ENABLED = "true";
     expect(installationEnrollmentEnabled()).toBe(true);
+  });
+
+  it("keeps authentication enforcement disabled unless explicitly true", () => {
+    delete process.env.INSTALLATION_AUTH_ENFORCED;
+    expect(installationAuthEnforced()).toBe(false);
+    process.env.INSTALLATION_AUTH_ENFORCED = "TRUE";
+    expect(installationAuthEnforced()).toBe(false);
+    process.env.INSTALLATION_AUTH_ENFORCED = "true";
+    expect(installationAuthEnforced()).toBe(true);
   });
 
   it("makes identical enrollment idempotent and rejects a different secret", async () => {

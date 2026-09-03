@@ -1,10 +1,14 @@
 import { Hono } from "hono";
-import { query } from "./db.js";
+import { query, transaction, type DatabaseQuery } from "./db.js";
 import { buildScoresQuery, buildStreakQuery } from "./queries.js";
 import {
+  authenticateInstallation,
   decodeInstallationSecret,
   enrollInstallation,
+  installationAuthApplies,
   installationEnrollmentEnabled,
+  lockInstallationOwner,
+  preflightInstallationMutation,
   isInstallationId,
 } from "./installation-auth.js";
 import { type ReplayProof, verifyReplayProof } from "./simulator.js";
@@ -29,13 +33,55 @@ app.get("/health", async (c) => {
 });
 
 app.get("/rest/v1/scores", async (c) => {
-  const sql = buildScoresQuery(new URL(c.req.url).searchParams);
-  return c.json(await query(sql.text, sql.values));
+  const params = new URL(c.req.url).searchParams;
+  const privateStatus = (params.get("select") ?? "").split(",")
+    .some((column) => column.trim() === "attempts_used" || column.trim() === "active_attempt_token");
+  if (!privateStatus) {
+    const sql = buildScoresQuery(params);
+    return c.json(await query(sql.text, sql.values));
+  }
+
+  const claimed = exactOwner(params.get("client_uuid"));
+  if (claimed === null) throw unauthorized();
+  if (installationAuthApplies(c.req.raw)) {
+    const auth = await authenticateInstallation(c.req.raw);
+    if (!auth.ok || claimed !== auth.clientUuid) throw unauthorized();
+    params.set("client_uuid", `eq.${auth.clientUuid}`);
+    const sql = buildScoresQuery(params);
+    return c.json(await query(sql.text, sql.values));
+  }
+
+  return transaction(async (runQuery) => {
+    await lockInstallationOwner(claimed, runQuery);
+    if (await ownerHasCredential(claimed, runQuery)) throw unauthorized();
+    const sql = buildScoresQuery(params);
+    return c.json(await runQuery(sql.text, sql.values));
+  });
 });
 
 app.get("/rest/v1/daily_streak_states", async (c) => {
-  const sql = buildStreakQuery(new URL(c.req.url).searchParams);
-  return c.json(await query(sql.text, sql.values));
+  const params = new URL(c.req.url).searchParams;
+  if (isPublicStreakLeaderboard(params)) {
+    const sql = buildStreakQuery(params);
+    return c.json(await query(sql.text, sql.values));
+  }
+
+  const claimed = exactOwner(params.get("client_uuid"));
+  if (claimed === null) throw unauthorized();
+  if (installationAuthApplies(c.req.raw)) {
+    const auth = await authenticateInstallation(c.req.raw);
+    if (!auth.ok || claimed !== auth.clientUuid) throw unauthorized();
+    params.set("client_uuid", `eq.${auth.clientUuid}`);
+    const sql = buildStreakQuery(params);
+    return c.json(await query(sql.text, sql.values));
+  }
+
+  return transaction(async (runQuery) => {
+    await lockInstallationOwner(claimed, runQuery);
+    if (await ownerHasCredential(claimed, runQuery)) throw unauthorized();
+    const sql = buildStreakQuery(params);
+    return c.json(await runQuery(sql.text, sql.values));
+  });
 });
 
 type JsonObject = Record<string, unknown>;
@@ -52,29 +98,39 @@ app.post("/v1/installations/enroll", async (c) => {
   const secret = decodeInstallationSecret(body.secret);
   if (!secret) throw new HttpError("INVALID_INSTALLATION_SECRET", 400);
 
-  const result = await enrollInstallation(body.installationId.toLowerCase(), secret);
+  const installationId = body.installationId.toLowerCase();
+  const result = await transaction(async (runQuery) => {
+    await lockInstallationOwner(installationId, runQuery);
+    return enrollInstallation(installationId, secret, runQuery);
+  });
   if (result === "conflict") return c.json({ error: "INSTALLATION_CONFLICT" }, 409);
   return c.json({
-    installationId: body.installationId.toLowerCase(),
+    installationId,
     enrolled: result === "created",
   }, result === "created" ? 201 : 200);
 });
 
 app.post("/rest/v1/rpc/start_daily_attempt", async (c) => {
+  await mutationPreflight(c.req.raw);
   const body = await readObject(c.req.raw);
-  const clientUuid = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
+  const claimed = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
   const challengeKey = dateKey(body.p_challenge_key);
   const playerName = optionalString(body.p_player_name, 20) ?? "Pending";
-  return c.json(await rpc("start_daily_attempt", [clientUuid, challengeKey, playerName]));
+  const result = await authenticatedMutation(c.req.raw, claimed, (runQuery, owner) =>
+    rpc("start_daily_attempt", [owner, challengeKey, playerName], runQuery));
+  return c.json(result);
 });
 
 for (const name of ["forfeit_daily_attempt", "rollback_daily_attempt"] as const) {
   app.post(`/rest/v1/rpc/${name}`, async (c) => {
+    await mutationPreflight(c.req.raw);
     const body = await readObject(c.req.raw);
-    const clientUuid = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
+    const claimed = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
     const challengeKey = dateKey(body.p_challenge_key);
     const token = requiredString(body.p_attempt_token, "INVALID_ATTEMPT_TOKEN", 1, 256);
-    return c.json(await rpc(name, [clientUuid, challengeKey, token]));
+    const result = await authenticatedMutation(c.req.raw, claimed, (runQuery, owner) =>
+      rpc(name, [owner, challengeKey, token], runQuery));
+    return c.json(result);
   });
 }
 
@@ -93,7 +149,11 @@ interface VerifyPayload {
 }
 
 app.post("/functions/v1/verify-score", async (c) => {
+  const preflight = await mutationPreflight(c.req.raw);
   const parsed = validateVerifyPayload(await readObject(c.req.raw));
+  if (preflight && parsed.clientUuid !== preflight.clientUuid) throw unauthorized();
+  if (!preflight && await ownerHasCredential(parsed.clientUuid)) throw unauthorized();
+
   const replay = verifyReplayProof(parsed.replayProof);
   if (!replay.ok) {
     return c.json({
@@ -111,12 +171,14 @@ app.post("/functions/v1/verify-score", async (c) => {
   }
 
   const skills = normalizeSkillUsage(parsed.entry.skillUsage);
-  const args = parsed.mode === "daily"
-    ? [parsed.clientUuid, parsed.challengeKey, parsed.attemptToken, parsed.entry.user,
-      Math.trunc(parsed.entry.score), Math.trunc(parsed.entry.level), parsed.entry.date, JSON.stringify(skills)]
-    : [parsed.clientUuid, parsed.entry.user, Math.trunc(parsed.entry.score),
-      Math.trunc(parsed.entry.level), parsed.entry.date, JSON.stringify(skills)];
-  const result = await rpc(parsed.mode === "daily" ? "submit_daily_score" : "submit_global_score", args);
+  const result = await authenticatedMutation(c.req.raw, parsed.clientUuid, (runQuery, owner) => {
+    const args = parsed.mode === "daily"
+      ? [owner, parsed.challengeKey, parsed.attemptToken, parsed.entry.user,
+        Math.trunc(parsed.entry.score), Math.trunc(parsed.entry.level), parsed.entry.date, JSON.stringify(skills)]
+      : [owner, parsed.entry.user, Math.trunc(parsed.entry.score),
+        Math.trunc(parsed.entry.level), parsed.entry.date, JSON.stringify(skills)];
+    return rpc(parsed.mode === "daily" ? "submit_daily_score" : "submit_global_score", args, runQuery);
+  });
   return c.json(result ?? {});
 });
 
@@ -129,14 +191,72 @@ const RPC_ARITY = {
 } as const;
 type RpcName = keyof typeof RPC_ARITY;
 
-async function rpc(name: RpcName, values: unknown[]): Promise<unknown> {
+async function rpc(
+  name: RpcName,
+  values: unknown[],
+  runQuery: DatabaseQuery = query,
+): Promise<unknown> {
   if (values.length !== RPC_ARITY[name]) throw new Error("INVALID_RPC_ARGUMENTS");
   const placeholders = values.map((_, index) => `$${index + 1}`).join(", ");
   // The function identifier and arity come only from the closed allowlist above.
-  const rows = await query<{ result: unknown }>(
+  const rows = await runQuery<{ result: unknown }>(
     `SELECT public.${name}(${placeholders}) AS result`, values,
   );
   return rows[0]?.result ?? null;
+}
+
+async function authenticatedMutation<T>(
+  request: Request,
+  claimedClientUuid: string,
+  work: (runQuery: DatabaseQuery, owner: string) => Promise<T>,
+): Promise<T> {
+  if (!installationAuthApplies(request)) {
+    return transaction(async (runQuery) => {
+      await lockInstallationOwner(claimedClientUuid, runQuery);
+      if (await ownerHasCredential(claimedClientUuid, runQuery)) throw unauthorized();
+      return work(runQuery, claimedClientUuid);
+    });
+  }
+
+  return transaction(async (runQuery) => {
+    const auth = await authenticateInstallation(request, { mutation: true, runQuery });
+    if (!auth.ok || claimedClientUuid !== auth.clientUuid) throw unauthorized();
+    return work(runQuery, auth.clientUuid);
+  });
+}
+
+async function mutationPreflight(request: Request) {
+  if (!installationAuthApplies(request)) return null;
+  const auth = await preflightInstallationMutation(request);
+  if (!auth.ok) throw unauthorized();
+  return auth;
+}
+
+function isPublicStreakLeaderboard(params: URLSearchParams): boolean {
+  return params.get("select") === "client_uuid,max_streak" &&
+    (params.get("client_uuid")?.startsWith("in.(") ?? false);
+}
+
+async function ownerHasCredential(
+  clientUuid: string,
+  runQuery: DatabaseQuery = query,
+): Promise<boolean> {
+  const rows = await runQuery<{ exists: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM public.installation_credentials
+       WHERE client_uuid = $1
+     ) AS exists`,
+    [clientUuid],
+  );
+  return rows[0]?.exists === true;
+}
+
+function exactOwner(filter: string | null): string | null {
+  return filter?.startsWith("eq.") ? filter.slice(3) : null;
+}
+
+function unauthorized(): HttpError {
+  return new HttpError("UNAUTHORIZED", 401);
 }
 
 async function readObject(request: Request): Promise<JsonObject> {

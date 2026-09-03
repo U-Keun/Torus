@@ -1,5 +1,5 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
-import { query } from "./db.js";
+import { query, type DatabaseQuery } from "./db.js";
 
 export const INSTALLATION_AUTH_SCHEME = "TorusInstall";
 export const INSTALLATION_AUTH_VERSION = "ti1";
@@ -10,10 +10,7 @@ export const INSTALLATION_TIMESTAMP_TOLERANCE_MS = 5 * 60 * 1000;
 const UUID_V4_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SECRET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 
-type Query = <T extends Record<string, unknown>>(
-  text: string,
-  values?: readonly unknown[],
-) => Promise<T[]>;
+type Query = DatabaseQuery;
 
 export interface InstallationToken {
   installationId: string;
@@ -53,6 +50,52 @@ export function installationSecretDigest(secret: Uint8Array, pepper = installati
 
 export function installationEnrollmentEnabled(value = process.env.INSTALLATION_ENROLLMENT_ENABLED): boolean {
   return value === "true";
+}
+
+export function installationAuthEnforced(value = process.env.INSTALLATION_AUTH_ENFORCED): boolean {
+  return value === "true";
+}
+
+export function installationAuthApplies(request: Request): boolean {
+  return installationAuthEnforced() || request.headers.has("authorization");
+}
+
+
+export async function lockInstallationOwner(
+  clientUuid: string,
+  runQuery: Query,
+): Promise<void> {
+  // The fixed namespace separates this protocol from other advisory-lock users.
+  // Hash collisions only serialize unrelated owners; they cannot bypass safety.
+  await runQuery(
+    "SELECT pg_advisory_xact_lock(1414484565, hashtext($1))",
+    [clientUuid],
+  );
+}
+
+export async function preflightInstallationMutation(
+  request: Request,
+  options: { now?: Date; runQuery?: Query } = {},
+): Promise<AuthenticationResult> {
+  const runQuery = options.runQuery ?? query;
+  const auth = await authenticateInstallation(request, { runQuery });
+  if (!auth.ok) return auth;
+
+  const timestamp = validRequestTimestamp(
+    request.headers.get(INSTALLATION_TIMESTAMP_HEADER),
+    options.now ?? new Date(),
+  );
+  const requestId = request.headers.get(INSTALLATION_REQUEST_ID_HEADER);
+  if (!timestamp || !isInstallationId(requestId)) return { ok: false };
+
+  const rows = await runQuery<{ available: boolean }>(
+    `SELECT NOT EXISTS (
+       SELECT 1 FROM public.installation_request_nonces
+       WHERE installation_id = $1 AND request_id = $2
+     ) AS available`,
+    [auth.installationId, requestId.toLowerCase()],
+  );
+  return rows[0]?.available === true ? auth : { ok: false };
 }
 
 export async function enrollInstallation(
