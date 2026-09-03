@@ -82,9 +82,15 @@ export function buildScoresQuery(params: URLSearchParams): SqlQuery {
   if (order !== null && order !== "score.desc,level.desc,created_at.desc") {
     throw new Error("INVALID_ORDER");
   }
+  const selectExpressions = columns.map((column) =>
+    column === "active_attempt_token"
+      ? "CASE WHEN active_attempt_token IS NULL THEN NULL ELSE 'present' END AS active_attempt_token"
+      : column,
+  );
   values.push(limitValue(params.get("limit")));
   return {
-    text: `SELECT ${columns.join(", ")} FROM public.scores${where.length ? ` WHERE ${where.join(" AND ")}` : ""}${order ? " ORDER BY score DESC, level DESC, created_at DESC" : ""} LIMIT $${values.length}`,
+    // Preserve the legacy field shape without exposing the capability token.
+    text: `SELECT ${selectExpressions.join(", ")} FROM public.scores${where.length ? ` WHERE ${where.join(" AND ")}` : ""}${order ? " ORDER BY score DESC, level DESC, created_at DESC" : ""} LIMIT $${values.length}`,
     values,
   };
 }
