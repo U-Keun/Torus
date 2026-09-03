@@ -84,7 +84,10 @@ export interface ScoreboardStore {
   topPersonal(limit?: number): Promise<ScoreEntry[]>;
   addPersonal(entry: ScoreEntry): Promise<void>;
   topDaily(challengeKey: string, limit?: number): Promise<ScoreEntry[]>;
-  startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult>;
+  startDailyAttempt(
+    challengeKey: string,
+    attemptToken?: string | null,
+  ): Promise<DailyAttemptStartResult>;
   addDaily(
     challengeKey: string,
     attemptToken: string,
@@ -330,16 +333,21 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
     return this.resolveDailyStore(challengeKey).top(limit);
   }
 
-  public startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult> {
+  public startDailyAttempt(
+    challengeKey: string,
+    attemptToken?: string | null,
+  ): Promise<DailyAttemptStartResult> {
     const normalized = normalizeChallengeKey(challengeKey);
     const status = this.getLocalDailyStatus(normalized);
     const activeAttemptToken = readDailyActiveAttemptToken(this.storage, normalized);
     if (activeAttemptToken) {
+      const suppliedToken = attemptToken?.trim() ?? "";
+      const canResume = suppliedToken.length > 0 && suppliedToken === activeAttemptToken;
       return Promise.resolve({
         ...status,
-        accepted: true,
-        resumed: true,
-        attemptToken: activeAttemptToken,
+        accepted: canResume,
+        resumed: canResume,
+        attemptToken: canResume ? suppliedToken : null,
       });
     }
     if (!status.canSubmit) {
@@ -351,14 +359,14 @@ class LocalOnlyScoreboardStore implements ScoreboardStore {
       });
     }
     this.setLocalDailyAttempts(normalized, status.attemptsUsed + 1);
-    const attemptToken = createLocalAttemptToken(normalized);
-    writeDailyActiveAttemptToken(this.storage, normalized, attemptToken);
+    const freshAttemptToken = createLocalAttemptToken(normalized);
+    writeDailyActiveAttemptToken(this.storage, normalized, freshAttemptToken);
     const startedStatus = this.getLocalDailyStatus(normalized);
     return Promise.resolve({
       ...startedStatus,
       accepted: true,
       resumed: false,
-      attemptToken,
+      attemptToken: freshAttemptToken,
     });
   }
 
@@ -518,9 +526,13 @@ class TauriScoreboardStore implements ScoreboardStore {
     }
   }
 
-  public async startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult> {
+  public async startDailyAttempt(
+    challengeKey: string,
+    attemptToken?: string | null,
+  ): Promise<DailyAttemptStartResult> {
     const result = await invoke<DailyAttemptStartResult>("start_daily_attempt", {
       challengeKey,
+      attemptToken: attemptToken ?? null,
     });
     return normalizeDailyAttemptStartResult(result, challengeKey);
   }

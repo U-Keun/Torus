@@ -164,8 +164,39 @@ describe("Torus Neon compatibility API", () => {
     expect(await response.json()).toEqual({ accepted: true, attemptToken: "token" });
     expect(queryMock).toHaveBeenNthCalledWith(
       5,
-      "SELECT public.start_daily_attempt($1, $2, $3) AS result",
-      ["device-12345678", "2026-01-02", "Ada"],
+      "SELECT public.start_daily_attempt($1, $2, $3, $4) AS result",
+      ["device-12345678", "2026-01-02", "Ada", null],
+    );
+  });
+
+  it("passes a caller-held Daily token to the start RPC as a resume proof", async () => {
+    queryMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
+      .mockResolvedValueOnce([{ result: {
+        accepted: true, resumed: true, attemptToken: "held-token",
+      } }]);
+    const response = await app.request("/rest/v1/rpc/start_daily_attempt", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        p_client_uuid: "device-12345678",
+        p_challenge_key: "2026-01-02",
+        p_player_name: "Ada",
+        p_attempt_token: "held-token",
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      accepted: true, resumed: true, attemptToken: "held-token",
+    });
+    expect(queryMock).toHaveBeenNthCalledWith(
+      5,
+      "SELECT public.start_daily_attempt($1, $2, $3, $4) AS result",
+      ["device-12345678", "2026-01-02", "Ada", "held-token"],
     );
   });
 
@@ -231,7 +262,7 @@ describe("Torus Neon compatibility API", () => {
     expect(response.status).toBe(200);
     expect(transactionMock).toHaveBeenCalledTimes(2);
     expect(queryMock).toHaveBeenNthCalledWith(5, expect.stringContaining("start_daily_attempt"), [
-      "legacy-device-1234", "2026-01-02", "Ada",
+      "legacy-device-1234", "2026-01-02", "Ada", null,
     ]);
   });
 
@@ -342,7 +373,7 @@ describe("Torus Neon compatibility API", () => {
     });
     expect(response.status).toBe(200);
     expect(transactionMock).toHaveBeenCalledTimes(1);
-    expect(queryMock.mock.calls[4][1]).toEqual([installationId, "2026-01-02", "Ada"]);
+    expect(queryMock.mock.calls[4][1]).toEqual([installationId, "2026-01-02", "Ada", null]);
   });
 
   it("rejects a cross-owner mutation with the generic 401 and never invokes its RPC", async () => {

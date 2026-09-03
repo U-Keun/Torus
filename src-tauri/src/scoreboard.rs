@@ -22,6 +22,7 @@ const DAILY_MAX_ATTEMPTS: i64 = 3;
 const DAILY_BADGE_MAX_POWER: i64 = 9;
 const MAX_DAILY_REPLAY_EVENTS: usize = 20_000;
 const MAX_DAILY_REPLAY_FINAL_TIME: i64 = 2_000_000;
+const MAX_DAILY_ATTEMPT_TOKEN_LEN: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SkillUsage {
@@ -209,6 +210,8 @@ struct DailyStartPayload<'a> {
     p_client_uuid: &'a str,
     p_challenge_key: &'a str,
     p_player_name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    p_attempt_token: Option<&'a str>,
 }
 
 #[derive(Debug, Serialize)]
@@ -360,10 +363,18 @@ pub async fn start_daily_attempt(
     _app: AppHandle,
     state: State<'_, ClientState>,
     challenge_key: String,
+    attempt_token: Option<String>,
 ) -> Result<DailyAttemptStartResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
+    let normalized_attempt_token = normalize_daily_attempt_token_candidate(attempt_token)?;
     let owner_id = state.owner_id().await?;
-    start_remote_daily_attempt(&state, &normalized_challenge_key, &owner_id).await
+    start_remote_daily_attempt(
+        &state,
+        &normalized_challenge_key,
+        normalized_attempt_token.as_deref(),
+        &owner_id,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -441,6 +452,20 @@ pub async fn rollback_daily_attempt(
 fn normalize_limit(limit: Option<u32>) -> usize {
     let raw = limit.unwrap_or(DEFAULT_TOP_LIMIT as u32);
     raw.clamp(1, MAX_TOP_LIMIT as u32) as usize
+}
+
+fn normalize_daily_attempt_token_candidate(raw: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.chars().count() > MAX_DAILY_ATTEMPT_TOKEN_LEN {
+        return Err("daily challenge attempt token exceeds limit".into());
+    }
+    Ok(Some(trimmed.to_string()))
 }
 
 fn normalize_daily_challenge_key(raw: &str) -> Result<String, String> {
@@ -1116,12 +1141,14 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 async fn start_remote_daily_attempt(
     state: &ClientState,
     challenge_key: &str,
+    attempt_token: Option<&str>,
     owner_key: &str,
 ) -> Result<DailyAttemptStartResult, String> {
     let payload = DailyStartPayload {
         p_client_uuid: owner_key,
         p_challenge_key: challenge_key,
         p_player_name: "Pending",
+        p_attempt_token: attempt_token,
     };
 
     let response = state
@@ -1336,7 +1363,53 @@ async fn rollback_remote_daily_attempt(
 
 #[cfg(test)]
 mod tests {
-    use super::{challenge_key_to_day_number, is_next_challenge_day, is_owned_by_owner};
+    use super::{
+        challenge_key_to_day_number, is_next_challenge_day, is_owned_by_owner,
+        normalize_daily_attempt_token_candidate, DailyStartPayload,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn daily_start_payload_only_sends_a_resume_token_when_supplied() {
+        let fresh = serde_json::to_value(DailyStartPayload {
+            p_client_uuid: "owner",
+            p_challenge_key: "2026-09-03",
+            p_player_name: "Pending",
+            p_attempt_token: None,
+        })
+        .unwrap();
+        assert_eq!(
+            fresh,
+            json!({
+                "p_client_uuid": "owner",
+                "p_challenge_key": "2026-09-03",
+                "p_player_name": "Pending"
+            })
+        );
+
+        let resumed = serde_json::to_value(DailyStartPayload {
+            p_client_uuid: "owner",
+            p_challenge_key: "2026-09-03",
+            p_player_name: "Pending",
+            p_attempt_token: Some("raw-token"),
+        })
+        .unwrap();
+        assert_eq!(resumed["p_attempt_token"], "raw-token");
+    }
+
+    #[test]
+    fn daily_resume_token_candidates_are_trimmed_and_bounded() {
+        assert_eq!(normalize_daily_attempt_token_candidate(None).unwrap(), None);
+        assert_eq!(
+            normalize_daily_attempt_token_candidate(Some("  ".into())).unwrap(),
+            None
+        );
+        assert_eq!(
+            normalize_daily_attempt_token_candidate(Some("  raw-token  ".into())).unwrap(),
+            Some("raw-token".into())
+        );
+        assert!(normalize_daily_attempt_token_candidate(Some("x".repeat(257))).is_err());
+    }
 
     #[test]
     fn legacy_and_authenticated_owner_ids_both_mark_historical_rows() {

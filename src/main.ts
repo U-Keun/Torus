@@ -574,12 +574,22 @@ async function startDailyChallengeGame(): Promise<void> {
   startingDailyChallenge = true;
   const challenge = getCurrentDailyChallenge();
   try {
-    let attemptResult = await scoreboardStore.startDailyAttempt(challenge.key);
+    const resumeAttemptToken = activeDailyChallengeKey === challenge.key
+      ? activeDailyAttemptToken
+      : null;
+    let attemptResult = await scoreboardStore.startDailyAttempt(challenge.key, resumeAttemptToken);
     setDailyChallengeStatus(toDailyChallengeStatus(attemptResult));
     if (!attemptResult.accepted || !attemptResult.attemptToken) {
-      const used = attemptResult.attemptsUsed;
-      const max = attemptResult.maxAttempts;
-      openNoticeModal("Daily Challenge", `No Daily Challenge attempts left for today (${used}/${max}).`);
+      if (attemptResult.hasActiveAttempt) {
+        openNoticeModal(
+          "Daily Challenge",
+          "An active Daily Challenge attempt exists, but this session cannot resume it.",
+        );
+      } else {
+        const used = attemptResult.attemptsUsed;
+        const max = attemptResult.maxAttempts;
+        openNoticeModal("Daily Challenge", `No Daily Challenge attempts left for today (${used}/${max}).`);
+      }
       return;
     }
 

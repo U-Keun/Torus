@@ -47,6 +47,14 @@ VITE_API_BASE_URL=<torusapi invocation URL without a trailing slash>
 
 The API intentionally keeps the established `/rest/v1/...` and `/functions/v1/verify-score` routes for compatibility with existing server behavior. This public API replaces the prior anonymous backend access. Score writes still require a valid replay, and daily state changes are guarded by attempt tokens in Postgres.
 
+## Daily attempt capability storage
+
+Migration `0004_daily_attempt_token_hash.sql` replaces the plaintext Daily attempt token column with a fixed-size SHA-256 digest. Existing active tokens are hashed during migration. New attempts use 32 random bytes and return the raw hex capability only once. The database stores only its digest.
+
+To resume an active attempt, send the locally held raw token as the optional `p_attempt_token` field to `POST /rest/v1/rpc/start_daily_attempt`. A matching token is echoed back with `resumed: true`. If an active attempt exists but the proof is missing or wrong, the response has `accepted: false`, `attemptToken: null`, and `hasActiveAttempt: true`. The server does not disclose, rotate, or reissue the capability. Score submission, forfeiture, and rollback hash the supplied token before comparing it and clear the stored digest when they consume the attempt.
+
+During the compatibility rollout, a headerless legacy client can still start a fresh attempt and submit it during the same running session. After an app restart, that client cannot recover an active token that it did not retain. Authenticated new clients retain the raw token and can prove possession to preserve resume behavior. The current desktop session snapshot still uses `localStorage`; moving the attempt token into the native installation credential vault is a separate follow-up hardening task.
+
 ## Installation credentials (rollout foundation)
 
 Migration `0002_installation_credentials.sql` adds server-only installation credentials and consumed request IDs. Direct `PUBLIC` access to both tables is revoked.

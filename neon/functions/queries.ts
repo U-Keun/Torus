@@ -84,7 +84,7 @@ export function buildScoresQuery(params: URLSearchParams): SqlQuery {
   }
   const selectExpressions = columns.map((column) =>
     column === "active_attempt_token"
-      ? "CASE WHEN active_attempt_token IS NULL THEN NULL ELSE 'present' END AS active_attempt_token"
+      ? "CASE WHEN active_attempt_token_hash IS NULL THEN NULL ELSE 'present' END AS active_attempt_token"
       : column,
   );
   values.push(limitValue(params.get("limit")));

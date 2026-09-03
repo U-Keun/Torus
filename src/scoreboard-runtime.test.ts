@@ -32,6 +32,34 @@ describe("scoreboard runtime selection", () => {
     expect(tauriMocks.invoke).not.toHaveBeenCalled();
   });
 
+  it("only resumes a local active attempt with its caller-held token", async () => {
+    tauriMocks.isTauri.mockReturnValue(false);
+    const store = createScoreboardStore();
+    const started = await store.startDailyAttempt("2026-01-02");
+
+    expect(started.accepted).toBe(true);
+    expect(started.resumed).toBe(false);
+    expect(started.attemptToken).not.toBeNull();
+    await expect(store.startDailyAttempt("2026-01-02")).resolves.toMatchObject({
+      accepted: false,
+      resumed: false,
+      attemptToken: null,
+      hasActiveAttempt: true,
+    });
+    await expect(store.startDailyAttempt("2026-01-02", "wrong-token")).resolves.toMatchObject({
+      accepted: false,
+      resumed: false,
+      attemptToken: null,
+      hasActiveAttempt: true,
+    });
+    await expect(store.startDailyAttempt("2026-01-02", started.attemptToken)).resolves.toMatchObject({
+      accepted: true,
+      resumed: true,
+      attemptToken: started.attemptToken,
+      hasActiveAttempt: true,
+    });
+  });
+
   it("uses Tauri commands without a JavaScript API URL", async () => {
     tauriMocks.isTauri.mockReturnValue(true);
     tauriMocks.invoke.mockResolvedValue([]);
@@ -75,12 +103,17 @@ describe("scoreboard runtime selection", () => {
 
     await store.add(entry, proof);
     await store.topDaily("2026-01-02", 5);
-    await store.startDailyAttempt("2026-01-02");
+    await store.startDailyAttempt("2026-01-02", "restored-attempt");
     await store.addDaily("2026-01-02", "attempt", entry, proof);
     await store.forfeitDailyAttempt("2026-01-02", "attempt");
     await store.rollbackDailyAttempt("2026-01-02", "attempt");
     await store.getDailyStatus("2026-01-02");
     await store.getDailyBadgeStatus("2026-01-02");
+
+    expect(tauriMocks.invoke).toHaveBeenCalledWith("start_daily_attempt", {
+      challengeKey: "2026-01-02",
+      attemptToken: "restored-attempt",
+    });
 
     const remoteCommands = tauriMocks.invoke.mock.calls.map(([command, payload]) => {
       expect(payload).not.toHaveProperty("apiBaseUrl");

@@ -124,9 +124,12 @@ app.post("/rest/v1/rpc/start_daily_attempt", async (c) => {
   const claimed = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
   const challengeKey = dateKey(body.p_challenge_key);
   const playerName = optionalString(body.p_player_name, 20) ?? "Pending";
+  const attemptToken = body.p_attempt_token === null || body.p_attempt_token === undefined
+    ? null
+    : requiredString(body.p_attempt_token, "INVALID_ATTEMPT_TOKEN", 1, 256);
   await legacyRatePreflight(c.req.raw, "startDailyAttempt", claimed);
   const result = await authenticatedMutation(c.req.raw, claimed, (runQuery, owner) =>
-    rpc("start_daily_attempt", [owner, challengeKey, playerName], runQuery));
+    rpc("start_daily_attempt", [owner, challengeKey, playerName, attemptToken], runQuery));
   return c.json(result);
 });
 
@@ -197,7 +200,7 @@ app.post("/functions/v1/verify-score", async (c) => {
 });
 
 const RPC_ARITY = {
-  start_daily_attempt: 3,
+  start_daily_attempt: 4,
   forfeit_daily_attempt: 3,
   rollback_daily_attempt: 3,
   submit_daily_score: 8,

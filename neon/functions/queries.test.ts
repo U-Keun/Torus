@@ -12,7 +12,7 @@ describe("PostgREST compatibility queries", () => {
     }));
     expect(query.text).toContain("mode = $1");
     expect(query.text).toContain(
-      "CASE WHEN active_attempt_token IS NULL THEN NULL ELSE 'present' END AS active_attempt_token",
+      "CASE WHEN active_attempt_token_hash IS NULL THEN NULL ELSE 'present' END AS active_attempt_token",
     );
     expect(query.text).not.toContain("owner-123456");
     expect(query.values).toEqual(["daily", "2026-01-02", "owner-123456", 1]);
