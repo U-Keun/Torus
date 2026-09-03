@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   type DailyReplayProof,
   type ReplayMove,
@@ -463,7 +463,6 @@ class TauriScoreboardStore implements ScoreboardStore {
     private readonly globalStore: LocalEntryStore,
     private readonly personalStore: LocalEntryStore,
     private readonly resolveDailyStore: DailyStoreResolver,
-    private readonly apiBaseUrl: string,
     private readonly storage: Storage = window.localStorage,
   ) {}
 
@@ -471,7 +470,6 @@ class TauriScoreboardStore implements ScoreboardStore {
     try {
       const rows = await invoke<ScoreEntry[]>("fetch_global_scores", {
         limit,
-        apiBaseUrl: this.apiBaseUrl || null,
       });
       const mapped = this.normalizeRemoteRows(rows);
       this.globalStore.merge(mapped);
@@ -491,7 +489,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       await invoke("submit_global_score", {
         entry,
         replayProof,
-        apiBaseUrl: this.apiBaseUrl || null,
       });
     } catch (error) {
       console.warn("Failed to save score through Tauri backend. Score kept locally.", error);
@@ -511,7 +508,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       const rows = await invoke<ScoreEntry[]>("fetch_daily_scores", {
         challengeKey,
         limit,
-        apiBaseUrl: this.apiBaseUrl || null,
       });
       const mapped = this.normalizeRemoteRows(rows);
       this.resolveDailyStore(challengeKey).merge(mapped);
@@ -525,7 +521,6 @@ class TauriScoreboardStore implements ScoreboardStore {
   public async startDailyAttempt(challengeKey: string): Promise<DailyAttemptStartResult> {
     const result = await invoke<DailyAttemptStartResult>("start_daily_attempt", {
       challengeKey,
-      apiBaseUrl: this.apiBaseUrl || null,
     });
     return normalizeDailyAttemptStartResult(result, challengeKey);
   }
@@ -541,7 +536,6 @@ class TauriScoreboardStore implements ScoreboardStore {
       attemptToken,
       entry,
       replayProof,
-      apiBaseUrl: this.apiBaseUrl || null,
     });
     const normalized = normalizeDailyChallengeSubmitResult(result, challengeKey);
     if (normalized.accepted) {
@@ -561,7 +555,6 @@ class TauriScoreboardStore implements ScoreboardStore {
     const result = await invoke<DailyAttemptForfeitResult>("forfeit_daily_attempt", {
       challengeKey,
       attemptToken,
-      apiBaseUrl: this.apiBaseUrl || null,
     });
     return normalizeDailyAttemptForfeitResult(result, challengeKey);
   }
@@ -573,7 +566,6 @@ class TauriScoreboardStore implements ScoreboardStore {
     const result = await invoke<DailyAttemptForfeitResult>("rollback_daily_attempt", {
       challengeKey,
       attemptToken,
-      apiBaseUrl: this.apiBaseUrl || null,
     });
     return normalizeDailyAttemptForfeitResult(result, challengeKey);
   }
@@ -581,7 +573,6 @@ class TauriScoreboardStore implements ScoreboardStore {
   public async getDailyStatus(challengeKey: string): Promise<DailyChallengeStatus> {
     const status = await invoke<DailyChallengeStatus>("fetch_daily_status", {
       challengeKey,
-      apiBaseUrl: this.apiBaseUrl || null,
     });
     return normalizeDailyChallengeStatus(status, challengeKey);
   }
@@ -590,7 +581,6 @@ class TauriScoreboardStore implements ScoreboardStore {
     const normalized = normalizeChallengeKey(challengeKey);
     return invoke<DailyBadgeStatus>("fetch_daily_badge_status", {
       challengeKey: normalized,
-      apiBaseUrl: this.apiBaseUrl || null,
     }).catch((error) => {
       console.warn("Failed to load daily badge status from Tauri backend. Using local cache.", error);
       const keys = readAcceptedDailyChallengeKeys(this.storage);
@@ -717,10 +707,8 @@ export function createScoreboardStore(): ScoreboardStore {
   const personalStore = new LocalEntryStore("torus-personal-scores-v1", window.localStorage, 10);
   personalStore.compactToLimit();
   const resolveDailyStore = createDailyStoreResolver(window.localStorage, 100);
-  const apiBaseUrl = readApiBaseUrl();
-
-  if (!apiBaseUrl) {
-    console.info("The online backend is not configured. Global score sync is disabled.");
+  if (!isTauri()) {
+    console.info("The browser runtime uses local scoreboards.");
     return new LocalOnlyScoreboardStore(
       globalStore,
       personalStore,
@@ -733,17 +721,8 @@ export function createScoreboardStore(): ScoreboardStore {
     globalStore,
     personalStore,
     resolveDailyStore,
-    apiBaseUrl,
     window.localStorage,
   );
-}
-
-function readApiBaseUrl(): string {
-  const value = import.meta.env.VITE_API_BASE_URL;
-  if (typeof value !== "string") {
-    return "";
-  }
-  return value.trim();
 }
 
 function normalizeOptionalBadgeMetric(raw: unknown): number | null {

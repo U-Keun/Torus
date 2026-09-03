@@ -79,7 +79,7 @@ npm install
 VITE_API_BASE_URL=https://YOUR_TORUS_API_HOST npm run tauri dev
 ```
 
-Omit `VITE_API_BASE_URL` to run with local-only scoreboards.
+Browser builds always use local-only scoreboards. Debug Tauri builds default to `https://example.invalid` when `VITE_API_BASE_URL` is omitted. Release builds require it.
 
 ### Visual QA with Storybook
 
@@ -116,15 +116,19 @@ CI runs the one-shot frontend tests, frontend build, Rust tests, Cargo check, an
 
 ### Backend configuration
 
-Desktop builds use one public frontend variable:
+Tauri compiles one public API origin into the Rust binary:
 
 ```bash
 VITE_API_BASE_URL=https://YOUR_TORUS_API_HOST
 ```
 
-Use the `torusapi` Neon Function invocation URL without a trailing slash. This is an HTTP API base URL, not a database connection string or secret. If it is not set, online sync is disabled and the scoreboards use local-only mode.
+Use the `torusapi` Neon Function invocation URL without a trailing slash. This is an HTTP API base URL, not a database connection string or secret. Release builds fail if it is missing or is not an absolute HTTPS origin. JavaScript cannot override this URL. Browser runtime scoreboards remain local-only.
 
-For local development, set the variable in your shell or a local untracked Vite environment file, then run `npm run tauri dev`.
+For local development, set the variable in the shell that starts `npm run tauri dev`.
+
+### Installation credential security
+
+The installation credential is a bearer credential protected in transit by TLS and at rest by the OS credential vault. Request timestamps and UUID nonces identify stale or exact replay attempts, but they do not sign the body. They do not prevent a party that has stolen the bearer secret from creating a new request. Server enforcement must validate HTTPS, timestamps, nonces, and the installation owner together. A `409` enrollment conflict fails closed and requires operator support; the client never rotates the credential automatically.
 
 ## Neon Backend Setup
 
@@ -154,7 +158,7 @@ The [`supabase/`](./supabase) directory is retained only as a legacy implementat
 - Personal records are always stored locally.
 - Online submission is optional.
 - Submitted scores include used skill metadata (`skill_usage`).
-- Tauri backend generates and stores a UUID at first run (`device-uuid-v1.txt` in app data dir).
+- Tauri keeps the existing legacy device UUID for historical `Me` labels. New authenticated records use a fresh installation UUID and secret stored only in the OS credential vault.
 - Classic mode online submission:
   - Uses a single row per owner via `(mode='classic', challenge_key='classic', client_uuid)`.
   - If row does not exist: insert.

@@ -19,6 +19,8 @@ permissions:
 jobs:
   build-and-check:
     runs-on: macos-14
+    env:
+      VITE_API_BASE_URL: https://example.invalid
 
     steps:
       - name: Checkout
@@ -54,10 +56,10 @@ jobs:
         run: npm run build
 
       - name: Test Rust App
-        run: cargo test --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Cargo Check
-        run: cargo check --manifest-path src-tauri/Cargo.toml
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
 
       - name: Rust Clippy
         run: npm run clippy

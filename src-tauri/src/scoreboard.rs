@@ -1,9 +1,9 @@
+use crate::auth::{AuthenticatedEndpoint, ClientState, PublicEndpoint};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 const CACHE_FILE_NAME: &str = "scoreboard-global-cache-v1.json";
@@ -11,7 +11,6 @@ const DEVICE_UUID_FILE_NAME: &str = "device-uuid-v1.txt";
 const CACHE_MAX_ENTRIES: usize = 100;
 const DEFAULT_TOP_LIMIT: usize = 10;
 const MAX_TOP_LIMIT: usize = 100;
-const HTTP_TIMEOUT_SECONDS: u64 = 8;
 const MAX_SKILL_USAGE_ITEMS: usize = 20;
 const MAX_SKILL_NAME_LEN: usize = 20;
 const MAX_SKILL_HOTKEY_LEN: usize = 16;
@@ -21,10 +20,6 @@ const DAILY_MODE: &str = "daily";
 const CLASSIC_CHALLENGE_KEY: &str = "classic";
 const DAILY_MAX_ATTEMPTS: i64 = 3;
 const DAILY_BADGE_MAX_POWER: i64 = 9;
-const DAILY_START_RPC_NAME: &str = "start_daily_attempt";
-const DAILY_FORFEIT_RPC_NAME: &str = "forfeit_daily_attempt";
-const DAILY_ROLLBACK_RPC_NAME: &str = "rollback_daily_attempt";
-const VERIFY_SCORE_FUNCTION_NAME: &str = "verify-score";
 const MAX_DAILY_REPLAY_EVENTS: usize = 20_000;
 const MAX_DAILY_REPLAY_FINAL_TIME: i64 = 2_000_000;
 
@@ -95,11 +90,6 @@ struct DailyStreakLookupRow {
     client_uuid: String,
     #[serde(default)]
     max_streak: Option<i64>,
-}
-
-#[derive(Debug, Clone)]
-struct BackendApiConfig {
-    base_url: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -245,32 +235,28 @@ struct VerifyScorePayload<'a> {
 #[tauri::command]
 pub async fn fetch_global_scores(
     app: AppHandle,
+    state: State<'_, ClientState>,
     limit: Option<u32>,
-    api_base_url: Option<String>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let mut cache = read_cache(&app)?;
-    let device_uuid = match get_or_create_device_uuid(&app) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            eprintln!("Failed to resolve device UUID. {error}");
-            None
+    let mut owner_keys = Vec::new();
+    if let Ok(value) = get_or_create_device_uuid(&app, &state) {
+        owner_keys.push(value);
+    }
+    if let Ok(value) = state.owner_id().await {
+        owner_keys.push(value);
+    }
+    match fetch_remote_scores(&state, top_limit, &owner_keys).await {
+        Ok(remote_entries) => {
+            cache.extend(remote_entries.clone());
+            sort_and_dedupe(&mut cache);
+            truncate_cache(&mut cache);
+            write_cache(&app, &cache)?;
+            return Ok(remote_entries);
         }
-    };
-    let config = normalize_backend_api_config(api_base_url);
-
-    if let Some(config) = config {
-        match fetch_remote_scores(&config, top_limit, device_uuid.as_deref()).await {
-            Ok(remote_entries) => {
-                cache.extend(remote_entries.clone());
-                sort_and_dedupe(&mut cache);
-                truncate_cache(&mut cache);
-                write_cache(&app, &cache)?;
-                return Ok(remote_entries);
-            }
-            Err(error) => {
-                eprintln!("Failed to load scores from the backend API. Using local cache. {error}");
-            }
+        Err(error) => {
+            eprintln!("Failed to load scores from the backend API. Using local cache. {error}");
         }
     }
 
@@ -281,26 +267,25 @@ pub async fn fetch_global_scores(
 #[tauri::command]
 pub async fn submit_global_score(
     app: AppHandle,
+    state: State<'_, ClientState>,
     entry: ScoreEntry,
     replay_proof: DailyReplayProof,
-    api_base_url: Option<String>,
 ) -> Result<(), String> {
     let mut cache = read_cache(&app)?;
     let mut entry = sanitize_entry(entry)?;
     let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
-    let device_uuid = get_or_create_device_uuid(&app)?;
     entry.is_me = true;
     cache.push(entry.clone());
     sort_and_dedupe(&mut cache);
     truncate_cache(&mut cache);
     write_cache(&app, &cache)?;
 
-    if let Some(config) = normalize_backend_api_config(api_base_url) {
-        if let Err(error) =
-            submit_remote_global_score(&config, &entry, &replay_proof, &device_uuid).await
-        {
-            eprintln!("Failed to save score to the backend API. Score kept locally. {error}");
-        }
+    let remote_result = match state.owner_id().await {
+        Ok(owner_id) => submit_remote_global_score(&state, &entry, &replay_proof, &owner_id).await,
+        Err(error) => Err(error),
+    };
+    if let Err(error) = remote_result {
+        eprintln!("Failed to save score to the backend API. Score kept locally. {error}");
     }
 
     Ok(())
@@ -309,42 +294,32 @@ pub async fn submit_global_score(
 #[tauri::command]
 pub async fn fetch_daily_scores(
     app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
     limit: Option<u32>,
-    api_base_url: Option<String>,
 ) -> Result<Vec<ScoreEntry>, String> {
     let top_limit = normalize_limit(limit);
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
-    let device_uuid = match get_or_create_device_uuid(&app) {
-        Ok(value) => Some(value),
-        Err(error) => {
-            eprintln!("Failed to resolve device UUID. {error}");
-            None
-        }
-    };
-    fetch_remote_daily_scores(
-        &config,
-        &normalized_challenge_key,
-        top_limit,
-        device_uuid.as_deref(),
-    )
-    .await
+    let mut owner_keys = Vec::new();
+    if let Ok(value) = get_or_create_device_uuid(&app, &state) {
+        owner_keys.push(value);
+    }
+    if let Ok(value) = state.owner_id().await {
+        owner_keys.push(value);
+    }
+    fetch_remote_daily_scores(&state, &normalized_challenge_key, top_limit, &owner_keys).await
 }
 
 #[tauri::command]
 pub async fn fetch_daily_status(
-    app: AppHandle,
+    _app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
-    api_base_url: Option<String>,
 ) -> Result<DailyStatus, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
-    let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_id = state.owner_id().await?;
     let remote_status =
-        fetch_remote_daily_attempts(&config, &normalized_challenge_key, &device_uuid).await?;
+        fetch_remote_daily_attempts(&state, &normalized_challenge_key, &owner_id).await?;
     Ok(build_daily_status(
         &normalized_challenge_key,
         remote_status.attempts_used,
@@ -354,15 +329,13 @@ pub async fn fetch_daily_status(
 
 #[tauri::command]
 pub async fn fetch_daily_badge_status(
-    app: AppHandle,
+    _app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
-    api_base_url: Option<String>,
 ) -> Result<DailyBadgeStatus, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
-    let device_uuid = get_or_create_device_uuid(&app)?;
-    let state = fetch_remote_daily_streak_state(&config, &device_uuid).await?;
+    let owner_id = state.owner_id().await?;
+    let state = fetch_remote_daily_streak_state(&state, &owner_id).await?;
     let (current_streak, max_streak) = match state {
         Some(value) => {
             let stored_current = value.current_streak.unwrap_or(0).max(0);
@@ -384,91 +357,83 @@ pub async fn fetch_daily_badge_status(
 
 #[tauri::command]
 pub async fn start_daily_attempt(
-    app: AppHandle,
+    _app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
-    api_base_url: Option<String>,
 ) -> Result<DailyAttemptStartResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
-    let device_uuid = get_or_create_device_uuid(&app)?;
-    start_remote_daily_attempt(&config, &normalized_challenge_key, &device_uuid).await
+    let owner_id = state.owner_id().await?;
+    start_remote_daily_attempt(&state, &normalized_challenge_key, &owner_id).await
 }
 
 #[tauri::command]
 pub async fn submit_daily_score(
-    app: AppHandle,
+    _app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
     attempt_token: String,
     entry: ScoreEntry,
     replay_proof: DailyReplayProof,
-    api_base_url: Option<String>,
 ) -> Result<DailySubmitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let entry = sanitize_entry(entry)?;
     let replay_proof = sanitize_daily_replay_proof(replay_proof)?;
-    let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_id = state.owner_id().await?;
     let normalized_attempt_token = attempt_token.trim().to_string();
     if normalized_attempt_token.is_empty() {
         return Err("daily challenge attempt token is required".into());
     }
     submit_remote_daily_score(
-        &config,
+        &state,
         &normalized_challenge_key,
         &normalized_attempt_token,
         &entry,
         &replay_proof,
-        &device_uuid,
+        &owner_id,
     )
     .await
 }
 
 #[tauri::command]
 pub async fn forfeit_daily_attempt(
-    app: AppHandle,
+    _app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
     attempt_token: String,
-    api_base_url: Option<String>,
 ) -> Result<DailyForfeitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let normalized_attempt_token = attempt_token.trim().to_string();
     if normalized_attempt_token.is_empty() {
         return Err("daily challenge attempt token is required".into());
     }
-    let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_id = state.owner_id().await?;
     forfeit_remote_daily_attempt(
-        &config,
+        &state,
         &normalized_challenge_key,
         &normalized_attempt_token,
-        &device_uuid,
+        &owner_id,
     )
     .await
 }
 
 #[tauri::command]
 pub async fn rollback_daily_attempt(
-    app: AppHandle,
+    _app: AppHandle,
+    state: State<'_, ClientState>,
     challenge_key: String,
     attempt_token: String,
-    api_base_url: Option<String>,
 ) -> Result<DailyForfeitResult, String> {
     let normalized_challenge_key = normalize_daily_challenge_key(&challenge_key)?;
-    let config = normalize_backend_api_config(api_base_url)
-        .ok_or_else(|| "daily challenge sync requires backend API configuration".to_string())?;
     let normalized_attempt_token = attempt_token.trim().to_string();
     if normalized_attempt_token.is_empty() {
         return Err("daily challenge attempt token is required".into());
     }
-    let device_uuid = get_or_create_device_uuid(&app)?;
+    let owner_id = state.owner_id().await?;
     rollback_remote_daily_attempt(
-        &config,
+        &state,
         &normalized_challenge_key,
         &normalized_attempt_token,
-        &device_uuid,
+        &owner_id,
     )
     .await
 }
@@ -476,14 +441,6 @@ pub async fn rollback_daily_attempt(
 fn normalize_limit(limit: Option<u32>) -> usize {
     let raw = limit.unwrap_or(DEFAULT_TOP_LIMIT as u32);
     raw.clamp(1, MAX_TOP_LIMIT as u32) as usize
-}
-
-fn normalize_backend_api_config(api_base_url: Option<String>) -> Option<BackendApiConfig> {
-    let base_url = api_base_url
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())?;
-
-    Some(BackendApiConfig { base_url })
 }
 
 fn normalize_daily_challenge_key(raw: &str) -> Result<String, String> {
@@ -688,7 +645,11 @@ fn read_device_uuid(path: &Path) -> Option<String> {
     Some(normalized.to_string())
 }
 
-fn get_or_create_device_uuid(app: &AppHandle) -> Result<String, String> {
+fn get_or_create_device_uuid(app: &AppHandle, state: &ClientState) -> Result<String, String> {
+    let _guard = state
+        .device_uuid_lock
+        .lock()
+        .map_err(|_| "device UUID lock failed".to_string())?;
     let path = device_uuid_path(app)?;
     if let Some(existing) = read_device_uuid(&path) {
         return Ok(existing);
@@ -759,21 +720,12 @@ fn truncate_cache(entries: &mut Vec<ScoreEntry>) {
     }
 }
 
-fn create_http_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(HTTP_TIMEOUT_SECONDS))
-        .build()
-        .map_err(|error| format!("failed to build http client: {error}"))
-}
-
 async fn fetch_remote_scores(
-    config: &BackendApiConfig,
+    state: &ClientState,
     limit: usize,
-    owner_key: Option<&str>,
+    owner_keys: &[String],
 ) -> Result<Vec<ScoreEntry>, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.base_url.trim_end_matches('/'));
-    let client = create_http_client()?;
-    let request = client.get(endpoint).query(&[
+    let request = state.public_request(PublicEndpoint::Scores).query(&[
         (
             "select",
             "player_name,score,level,created_at,skill_usage,client_uuid",
@@ -804,7 +756,7 @@ async fn fetch_remote_scores(
         .iter()
         .filter_map(|row| row.client_uuid.clone())
         .collect::<Vec<_>>();
-    let streak_map = match fetch_remote_streak_max_map(config, &owners).await {
+    let streak_map = match fetch_remote_streak_max_map(state, &owners).await {
         Ok(map) => map,
         Err(error) => {
             eprintln!("Failed to load streak states for scoreboard rows. {error}");
@@ -829,23 +781,21 @@ async fn fetch_remote_scores(
             level: row.level,
             date: row.created_at,
             skill_usage: row.skill_usage.unwrap_or_default(),
-            is_me: is_owned_by_owner(row.client_uuid.as_deref(), owner_key),
+            is_me: is_owned_by_owner(row.client_uuid.as_deref(), owner_keys),
         })
         .collect())
 }
 
 async fn fetch_remote_daily_scores(
-    config: &BackendApiConfig,
+    state: &ClientState,
     challenge_key: &str,
     limit: usize,
-    owner_key: Option<&str>,
+    owner_keys: &[String],
 ) -> Result<Vec<ScoreEntry>, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.base_url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
     let challenge_filter = format!("eq.{challenge_key}");
-    let client = create_http_client()?;
-    let response = client
-        .get(endpoint)
+    let response = state
+        .public_request(PublicEndpoint::Scores)
         .query(&[
             (
                 "select",
@@ -878,7 +828,7 @@ async fn fetch_remote_daily_scores(
         .iter()
         .filter_map(|row| row.client_uuid.clone())
         .collect::<Vec<_>>();
-    let streak_map = match fetch_remote_streak_max_map(config, &owners).await {
+    let streak_map = match fetch_remote_streak_max_map(state, &owners).await {
         Ok(map) => map,
         Err(error) => {
             eprintln!("Failed to load streak states for daily rows. {error}");
@@ -903,20 +853,19 @@ async fn fetch_remote_daily_scores(
             level: row.level,
             date: row.created_at,
             skill_usage: row.skill_usage.unwrap_or_default(),
-            is_me: is_owned_by_owner(row.client_uuid.as_deref(), owner_key),
+            is_me: is_owned_by_owner(row.client_uuid.as_deref(), owner_keys),
         })
         .collect())
 }
 
-fn is_owned_by_owner(row_client_uuid: Option<&str>, owner_key: Option<&str>) -> bool {
-    matches!(
-        (row_client_uuid, owner_key),
-        (Some(row_uuid), Some(owner_key)) if row_uuid == owner_key
-    )
+fn is_owned_by_owner(row_client_uuid: Option<&str>, owner_keys: &[String]) -> bool {
+    row_client_uuid
+        .map(|row_uuid| owner_keys.iter().any(|owner| owner == row_uuid))
+        .unwrap_or(false)
 }
 
 async fn fetch_remote_streak_max_map(
-    config: &BackendApiConfig,
+    state: &ClientState,
     owner_keys: &[String],
 ) -> Result<HashMap<String, i64>, String> {
     let mut normalized = owner_keys
@@ -930,10 +879,6 @@ async fn fetch_remote_streak_max_map(
         return Ok(HashMap::new());
     }
 
-    let endpoint = format!(
-        "{}/rest/v1/daily_streak_states",
-        config.base_url.trim_end_matches('/')
-    );
     let owner_filter = format!(
         "in.({})",
         normalized
@@ -942,9 +887,8 @@ async fn fetch_remote_streak_max_map(
             .collect::<Vec<_>>()
             .join(",")
     );
-    let client = create_http_client()?;
-    let response = client
-        .get(endpoint)
+    let response = state
+        .public_request(PublicEndpoint::DailyStreakStates)
         .query(&[
             ("select", "client_uuid,max_streak"),
             ("client_uuid", owner_filter.as_str()),
@@ -982,17 +926,16 @@ fn quote_postgrest_text(raw: &str) -> String {
 }
 
 async fn fetch_remote_daily_attempts(
-    config: &BackendApiConfig,
+    state: &ClientState,
     challenge_key: &str,
     owner_key: &str,
 ) -> Result<RemoteDailyAttemptStatus, String> {
-    let endpoint = format!("{}/rest/v1/scores", config.base_url.trim_end_matches('/'));
     let mode_filter = format!("eq.{DAILY_MODE}");
     let challenge_filter = format!("eq.{challenge_key}");
     let uuid_filter = format!("eq.{owner_key}");
-    let client = create_http_client()?;
-    let response = client
-        .get(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::Scores)
+        .await?
         .query(&[
             ("select", "attempts_used,active_attempt_token"),
             ("mode", mode_filter.as_str()),
@@ -1005,10 +948,9 @@ async fn fetch_remote_daily_attempts(
         .map_err(|error| format!("backend API daily status fetch failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "backend API daily status fetch failed with {status}: {body}"
+            "backend API daily status fetch failed with {}",
+            response.status()
         ));
     }
 
@@ -1034,17 +976,13 @@ async fn fetch_remote_daily_attempts(
 }
 
 async fn fetch_remote_daily_streak_state(
-    config: &BackendApiConfig,
+    state: &ClientState,
     owner_key: &str,
 ) -> Result<Option<DailyStreakStateRow>, String> {
-    let endpoint = format!(
-        "{}/rest/v1/daily_streak_states",
-        config.base_url.trim_end_matches('/')
-    );
     let uuid_filter = format!("eq.{owner_key}");
-    let client = create_http_client()?;
-    let response = client
-        .get(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::DailyStreakStates)
+        .await?
         .query(&[
             ("select", "current_streak,max_streak,last_submission_key"),
             ("client_uuid", uuid_filter.as_str()),
@@ -1055,10 +993,9 @@ async fn fetch_remote_daily_streak_state(
         .map_err(|error| format!("backend API daily badge fetch failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
         return Err(format!(
-            "backend API daily badge fetch failed with {status}: {body}"
+            "backend API daily badge fetch failed with {}",
+            response.status()
         ));
     }
 
@@ -1177,40 +1114,28 @@ fn days_from_civil(year: i32, month: u32, day: u32) -> i64 {
 }
 
 async fn start_remote_daily_attempt(
-    config: &BackendApiConfig,
+    state: &ClientState,
     challenge_key: &str,
     owner_key: &str,
 ) -> Result<DailyAttemptStartResult, String> {
-    let endpoint = format!(
-        "{}/rest/v1/rpc/{}",
-        config.base_url.trim_end_matches('/'),
-        DAILY_START_RPC_NAME
-    );
     let payload = DailyStartPayload {
         p_client_uuid: owner_key,
         p_challenge_key: challenge_key,
         p_player_name: "Pending",
     };
 
-    let client = create_http_client()?;
-    let response = client
-        .post(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::StartDailyAttempt)
+        .await?
         .json(&payload)
         .send()
         .await
         .map_err(|error| format!("backend API daily start failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let overload_hint = if body.contains("PGRST203") {
-            "\nHint: Complete the Neon migration by removing legacy *_daily_attempt(..., uuid) overloads."
-        } else {
-            ""
-        };
         return Err(format!(
-            "backend API daily start failed with {status}: {body}{overload_hint}\n\
-Ensure the Neon migrations have been applied (including RPC {DAILY_START_RPC_NAME})."
+            "backend API daily start failed with {}",
+            response.status()
         ));
     }
 
@@ -1241,16 +1166,11 @@ Ensure the Neon migrations have been applied (including RPC {DAILY_START_RPC_NAM
 }
 
 async fn submit_remote_global_score(
-    config: &BackendApiConfig,
+    state: &ClientState,
     entry: &ScoreEntry,
     replay_proof: &DailyReplayProof,
     owner_key: &str,
 ) -> Result<(), String> {
-    let endpoint = format!(
-        "{}/functions/v1/{}",
-        config.base_url.trim_end_matches('/'),
-        VERIFY_SCORE_FUNCTION_NAME
-    );
     let payload = VerifyScorePayload {
         mode: CLASSIC_MODE,
         challenge_key: CLASSIC_CHALLENGE_KEY,
@@ -1260,25 +1180,18 @@ async fn submit_remote_global_score(
         replay_proof,
     };
 
-    let client = create_http_client()?;
-    let response = client
-        .post(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::VerifyScore)
+        .await?
         .json(&payload)
         .send()
         .await
         .map_err(|error| format!("backend API global replay verify failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let summary = summarize_daily_verify_error_body(&body);
-        let hint = daily_verify_error_hint(&summary);
-        let hint_suffix = hint
-            .map(|value| format!("\nHint: {value}"))
-            .unwrap_or_default();
         return Err(format!(
-            "backend API global replay verify failed with {status}: {summary}{hint_suffix}\n\
-Ensure the Neon migrations are applied and the backend verification route is deployed."
+            "backend API global replay verify failed with {}",
+            response.status()
         ));
     }
 
@@ -1286,18 +1199,13 @@ Ensure the Neon migrations are applied and the backend verification route is dep
 }
 
 async fn submit_remote_daily_score(
-    config: &BackendApiConfig,
+    state: &ClientState,
     challenge_key: &str,
     attempt_token: &str,
     entry: &ScoreEntry,
     replay_proof: &DailyReplayProof,
     owner_key: &str,
 ) -> Result<DailySubmitResult, String> {
-    let endpoint = format!(
-        "{}/functions/v1/{}",
-        config.base_url.trim_end_matches('/'),
-        VERIFY_SCORE_FUNCTION_NAME
-    );
     let payload = VerifyScorePayload {
         mode: DAILY_MODE,
         challenge_key,
@@ -1307,25 +1215,18 @@ async fn submit_remote_daily_score(
         replay_proof,
     };
 
-    let client = create_http_client()?;
-    let response = client
-        .post(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::VerifyScore)
+        .await?
         .json(&payload)
         .send()
         .await
         .map_err(|error| format!("backend API daily replay verify failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let summary = summarize_daily_verify_error_body(&body);
-        let hint = daily_verify_error_hint(&summary);
-        let hint_suffix = hint
-            .map(|value| format!("\nHint: {value}"))
-            .unwrap_or_default();
         return Err(format!(
-            "backend API daily replay verify failed with {status}: {summary}{hint_suffix}\n\
-Ensure the Neon migrations are applied and the backend verification route is deployed."
+            "backend API daily replay verify failed with {}",
+            response.status()
         ));
     }
 
@@ -1345,108 +1246,30 @@ Ensure the Neon migrations are applied and the backend verification route is dep
     })
 }
 
-fn summarize_daily_verify_error_body(body: &str) -> String {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return "(empty response body)".to_string();
-    }
-
-    let parsed = match serde_json::from_str::<serde_json::Value>(trimmed) {
-        Ok(value) => value,
-        Err(_) => return trimmed.to_string(),
-    };
-
-    let mut parts: Vec<String> = Vec::new();
-    if let Some(value) = parsed.get("error").and_then(|value| value.as_str()) {
-        if !value.trim().is_empty() {
-            parts.push(value.trim().to_string());
-        }
-    }
-    if let Some(value) = parsed.get("reason").and_then(|value| value.as_str()) {
-        if !value.trim().is_empty() {
-            parts.push(format!("reason={}", value.trim()));
-        }
-    }
-    if let Some(value) = parsed.get("detail").and_then(|value| value.as_str()) {
-        if !value.trim().is_empty() {
-            parts.push(format!("detail={}", value.trim()));
-        }
-    }
-    if let Some(value) = parsed.get("code").and_then(|value| value.as_str()) {
-        if !value.trim().is_empty() {
-            parts.push(format!("code={}", value.trim()));
-        }
-    }
-
-    if parts.is_empty() {
-        trimmed.to_string()
-    } else {
-        parts.join(", ")
-    }
-}
-
-fn daily_verify_error_hint(summary: &str) -> Option<&'static str> {
-    if summary.contains("REPLAY_VERIFICATION_FAILED") {
-        return Some("Replay proof mismatch. Check backend API logs for reason/expected/actual.");
-    }
-    if summary.contains("CHALLENGE_KEY_MISMATCH") {
-        return Some("The UTC day changed during the run. Start a new Daily Challenge attempt.");
-    }
-    if summary.contains("INVALID_ATTEMPT_TOKEN") {
-        return Some("The attempt token is stale. Start a new Daily Challenge attempt.");
-    }
-    if summary.contains("MISSING_DATABASE_ENV") {
-        return Some("Configure the backend API database credentials.");
-    }
-    if summary.contains("RPC_SUBMIT_GLOBAL_SCORE_FAILED") {
-        return Some(
-            "Check the submit_global_score RPC and its execute grant in the Neon migrations.",
-        );
-    }
-    if summary.contains("permission denied") {
-        return Some(
-            "Grant the backend database role execute access to submit_daily_score/submit_global_score in the Neon migrations.",
-        );
-    }
-    None
-}
-
 async fn forfeit_remote_daily_attempt(
-    config: &BackendApiConfig,
+    state: &ClientState,
     challenge_key: &str,
     attempt_token: &str,
     owner_key: &str,
 ) -> Result<DailyForfeitResult, String> {
-    let endpoint = format!(
-        "{}/rest/v1/rpc/{}",
-        config.base_url.trim_end_matches('/'),
-        DAILY_FORFEIT_RPC_NAME
-    );
     let payload = DailyForfeitPayload {
         p_client_uuid: owner_key,
         p_challenge_key: challenge_key,
         p_attempt_token: attempt_token,
     };
 
-    let client = create_http_client()?;
-    let response = client
-        .post(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::ForfeitDailyAttempt)
+        .await?
         .json(&payload)
         .send()
         .await
         .map_err(|error| format!("backend API daily forfeit failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let overload_hint = if body.contains("PGRST203") {
-            "\nHint: Complete the Neon migration by removing legacy *_daily_attempt(..., uuid) overloads."
-        } else {
-            ""
-        };
         return Err(format!(
-            "backend API daily forfeit failed with {status}: {body}{overload_hint}\n\
-Ensure the Neon migrations have been applied (including RPC {DAILY_FORFEIT_RPC_NAME})."
+            "backend API daily forfeit failed with {}",
+            response.status()
         ));
     }
 
@@ -1468,41 +1291,29 @@ Ensure the Neon migrations have been applied (including RPC {DAILY_FORFEIT_RPC_N
 }
 
 async fn rollback_remote_daily_attempt(
-    config: &BackendApiConfig,
+    state: &ClientState,
     challenge_key: &str,
     attempt_token: &str,
     owner_key: &str,
 ) -> Result<DailyForfeitResult, String> {
-    let endpoint = format!(
-        "{}/rest/v1/rpc/{}",
-        config.base_url.trim_end_matches('/'),
-        DAILY_ROLLBACK_RPC_NAME
-    );
     let payload = DailyForfeitPayload {
         p_client_uuid: owner_key,
         p_challenge_key: challenge_key,
         p_attempt_token: attempt_token,
     };
 
-    let client = create_http_client()?;
-    let response = client
-        .post(endpoint)
+    let response = state
+        .request(AuthenticatedEndpoint::RollbackDailyAttempt)
+        .await?
         .json(&payload)
         .send()
         .await
         .map_err(|error| format!("backend API daily rollback failed: {error}"))?;
 
     if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        let overload_hint = if body.contains("PGRST203") {
-            "\nHint: Complete the Neon migration by removing legacy *_daily_attempt(..., uuid) overloads."
-        } else {
-            ""
-        };
         return Err(format!(
-            "backend API daily rollback failed with {status}: {body}{overload_hint}\n\
-Ensure the Neon migrations have been applied (including RPC {DAILY_ROLLBACK_RPC_NAME})."
+            "backend API daily rollback failed with {}",
+            response.status()
         ));
     }
 
@@ -1525,7 +1336,19 @@ Ensure the Neon migrations have been applied (including RPC {DAILY_ROLLBACK_RPC_
 
 #[cfg(test)]
 mod tests {
-    use super::{challenge_key_to_day_number, is_next_challenge_day};
+    use super::{challenge_key_to_day_number, is_next_challenge_day, is_owned_by_owner};
+
+    #[test]
+    fn legacy_and_authenticated_owner_ids_both_mark_historical_rows() {
+        let owners = vec![
+            "legacy-device-id".to_string(),
+            "new-installation-id".to_string(),
+        ];
+        assert!(is_owned_by_owner(Some("legacy-device-id"), &owners));
+        assert!(is_owned_by_owner(Some("new-installation-id"), &owners));
+        assert!(!is_owned_by_owner(Some("another-owner"), &owners));
+        assert!(!is_owned_by_owner(None, &owners));
+    }
 
     #[test]
     fn challenge_days_are_consecutive_across_calendar_boundaries() {

@@ -12,7 +12,7 @@
     "build-storybook": "storybook build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "clippy": "cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings",
+    "clippy": "cargo clippy --locked --manifest-path src-tauri/Cargo.toml -- -D warnings",
     "xcodeproj:gen": "bash scripts/generate-xcodeproj.sh",
     "xcodeproj:open": "bash scripts/generate-xcodeproj.sh --open",
     "mas:check": "bash scripts/macos-appstore-release.sh check",

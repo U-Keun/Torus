@@ -1,8 +1,12 @@
+mod auth;
 mod scoreboard;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let client_state =
+        auth::ClientState::production().expect("failed to initialize backend client");
     tauri::Builder::default()
+        .manage(client_state)
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_opener::init())
