@@ -17,3 +17,17 @@ describe("installation credential migration", () => {
     expect(sql).toContain("revoke all on table public.installation_request_nonces from public;");
   });
 });
+
+const rateSql = readFileSync(new URL("../migrations/0003_server_rate_limits.sql", import.meta.url), "utf8");
+
+describe("server rate limit migration", () => {
+  it("keeps buckets server-only with an indexed bounded cleanup function", () => {
+    expect(rateSql).toContain("revoke all on table public.server_rate_limit_buckets from public;");
+    expect(rateSql).toContain("revoke all on function public.cleanup_server_rate_limit_buckets() from public;");
+    expect(rateSql).toContain("revoke all on function public.cleanup_installation_request_nonces() from public;");
+    expect(rateSql).toContain("consumed_at < clock_timestamp() - interval '10 minutes'");
+    expect(rateSql).toContain("idx_server_rate_limit_buckets_cleanup");
+    expect(rateSql).toMatch(/limit 500/i);
+    expect(rateSql).toContain("security invoker");
+  });
+});

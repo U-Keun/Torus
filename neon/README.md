@@ -53,7 +53,7 @@ Migration `0002_installation_credentials.sql` adds server-only installation cred
 
 Configure `INSTALLATION_TOKEN_PEPPER` as a server secret before using installation authentication. It is required to derive the stored HMAC-SHA256 digest and must not be exposed to clients or placed in a `VITE_*` variable. Credentials and secrets must never be logged. Keep the pepper stable: changing it invalidates all enrolled credentials.
 
-Enrollment is closed by default. `POST /v1/installations/enroll` behaves like an unknown route unless `INSTALLATION_ENROLLMENT_ENABLED=true`. Keep this gate off until enrollment rate limiting is deployed; rate limiting is a hard rollout prerequisite and is intentionally not implemented in this step. Enable enrollment only during the coordinated client rollout. The JSON request is:
+Enrollment is closed by default. `POST /v1/installations/enroll` behaves like an unknown route unless `INSTALLATION_ENROLLMENT_ENABLED=true`. Enable enrollment only during the coordinated client rollout. The JSON request is:
 
 ```json
 {
@@ -77,12 +77,12 @@ X-Torus-Timestamp: 1767355200
 X-Torus-Request-Id: 223e4567-e89b-42d3-a456-426614174001
 ```
 
-Each `(installationId, requestId)` pair is consumed atomically. Reuse, stale metadata, malformed credentials, incorrect credentials, and owner mismatches all produce the same `401 {"error":"UNAUTHORIZED"}` response. Enrolled owners must authenticate private Daily attempt-status reads and mutations even before global enforcement. Headerless legacy owners continue to work while enforcement is disabled, but they cannot claim or downgrade an enrolled identity. Enrollment and headerless legacy access take the same owner-keyed transaction advisory lock, then check or create the credential and complete the protected operation before releasing it. This closes the enrollment-versus-legacy downgrade race.
+Each `(installationId, requestId)` pair is consumed atomically. Reuse, stale metadata, malformed credentials, incorrect credentials, and owner mismatches all produce the same `401 {"error":"UNAUTHORIZED"}` response. Enrolled owners must authenticate private Daily attempt-status reads and mutations even before global enforcement. Headerless legacy owners continue to work while enforcement is disabled, but they cannot claim or downgrade an enrolled identity. Enrollment and each headerless legacy access phase take the same owner-keyed transaction advisory lock. Legacy rate accounting commits separately from the business operation, which acquires the lock and checks credential state again. If enrollment wins between those phases, the final check rejects the legacy operation. This closes the enrollment-versus-legacy downgrade race without refunding request cost on business failure.
 
 Roll out in this order:
 
 1. Configure a stable `INSTALLATION_TOKEN_PEPPER` while `INSTALLATION_AUTH_ENFORCED` remains unset or `false`.
-2. After enrollment request limits are deployed, set `INSTALLATION_ENROLLMENT_ENABLED=true` and release clients that enroll, store the secret in native secure storage, and authenticate private reads and mutations.
+2. Deploy migrations `0002` and `0003` plus the Function with rate limits, then set `INSTALLATION_ENROLLMENT_ENABLED=true` and release clients that enroll, store the secret in native secure storage, and authenticate private reads and mutations.
 3. Keep enrollment enabled for legitimate first-run installations. Treat its flag as an emergency kill switch, not a normal migration-window switch.
 4. Confirm adoption, then set `INSTALLATION_AUTH_ENFORCED=true`. Missing authentication on mutations now returns the same generic `401` as invalid authentication.
 
@@ -90,4 +90,23 @@ Public score leaderboards remain anonymous. For compatibility, only a Daily stre
 
 This is bearer authentication and relies on HTTPS plus native secret storage. The timestamp and request ID reject an exact duplicate request ID; they do not sign the method, path, headers, or body. Possession of the bearer secret grants the installation's full authority, so these headers do not protect against a stolen bearer token. Credential recheck, nonce consumption, and the protected database mutation run on one checked-out connection in one transaction, so a failed operation rolls the nonce back.
 
-Nonce cleanup is intentionally deferred rather than adding unbounded deletion to request transactions. A follow-up maintenance job should delete `installation_request_nonces` rows older than 10 minutes in bounded batches, using the `idx_installation_request_nonces_consumed_at` index.
+Migration `0003` adds a bounded cleanup function for consumed request IDs. It deletes at most 500 nonce rows older than 10 minutes per call and uses `idx_installation_request_nonces_consumed_at`.
+
+
+## Server rate limits
+
+Migration `0003_server_rate_limits.sql` adds the server-only PostgreSQL fixed-window buckets. PostgreSQL is the shared authority across Function instances. The API does not use `X-Forwarded-For` or process memory. Policies and route keys are a closed server allowlist:
+
+- enrollment global: **120 requests/minute**, before body parsing;
+- enrollment installation ID: **3 requests/10 minutes**, after validating the ID;
+- authenticated score verification: **10 requests/minute per credential and route**, after auth but before replay simulation;
+- authenticated Daily mutations: **30 requests/minute per credential and route**;
+- private score and streak status: **60 requests/minute per owner and route**.
+
+The limits admit exactly the stated count. The next request gets `429 {"error":"RATE_LIMITED"}` and a whole-second `Retry-After` header. Rejected requests still consume a count. Enrollment accounting occurs outside the enrollment transaction, so invalid secrets and enrollment conflicts are also retained. Mutation authentication preflight happens before charging a credential bucket. Rate accounting happens before the business transaction, so a failed or rolled-back mutation does not refund it.
+
+During optional-auth rollout, headerless legacy mutations are limited only after their claimed UUID can be parsed. That UUID is public, spoofable, and bypassable, so this is transitional abuse reduction rather than an identity boundary. Remove this path by enabling `INSTALLATION_AUTH_ENFORCED`. Public leaderboard reads remain subject to Neon platform limits for now.
+
+Do not put bearer secrets, authorization headers, request IDs, or other tokens in rate-limit keys. The current keys are only fixed constants, installation IDs, and claimed legacy owner UUIDs.
+
+At least hourly, call both `select public.cleanup_server_rate_limit_buckets();` and `select public.cleanup_installation_request_nonces();` using a server database role. Each call uses its cleanup index and deletes at most 500 expired rows. Repeat each call until it returns `0` to drain a backlog without an unbounded request-path delete.

@@ -1,14 +1,16 @@
 import { createHmac } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { queryMock, transactionMock, replayMock } = vi.hoisted(() => ({
+const { queryMock, transactionMock, replayMock, rateLimitMock } = vi.hoisted(() => ({
   queryMock: vi.fn(),
   transactionMock: vi.fn(),
   replayMock: vi.fn(),
+  rateLimitMock: vi.fn(),
 }));
 
 vi.mock("./db.js", () => ({ query: queryMock, transaction: transactionMock }));
 vi.mock("./simulator.js", () => ({ verifyReplayProof: replayMock }));
+vi.mock("./rate-limit.js", () => ({ consumeRateLimit: rateLimitMock }));
 
 import app from "./api.js";
 
@@ -41,6 +43,8 @@ describe("Torus Neon compatibility API", () => {
     transactionMock.mockReset();
     transactionMock.mockImplementation(async (work) => work(queryMock));
     replayMock.mockReset();
+    rateLimitMock.mockReset();
+    rateLimitMock.mockResolvedValue({ allowed: true, retryAfter: 1 });
     replayMock.mockReturnValue({ ok: true, reason: null, actual: {
       score: 0, level: 0, time: 0, gameOn: false,
     } });
@@ -143,6 +147,8 @@ describe("Torus Neon compatibility API", () => {
     queryMock
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ exists: false }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
       .mockResolvedValueOnce([{ result: { accepted: true, attemptToken: "token" } }]);
     const response = await app.request("/rest/v1/rpc/start_daily_attempt", {
       method: "POST",
@@ -157,7 +163,7 @@ describe("Torus Neon compatibility API", () => {
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({ accepted: true, attemptToken: "token" });
     expect(queryMock).toHaveBeenNthCalledWith(
-      3,
+      5,
       "SELECT public.start_daily_attempt($1, $2, $3) AS result",
       ["device-12345678", "2026-01-02", "Ada"],
     );
@@ -210,6 +216,8 @@ describe("Torus Neon compatibility API", () => {
     queryMock
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ exists: false }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
       .mockResolvedValueOnce([{ result: { accepted: true } }]);
     const response = await app.request("/rest/v1/rpc/start_daily_attempt", {
       method: "POST",
@@ -221,14 +229,16 @@ describe("Torus Neon compatibility API", () => {
       }),
     });
     expect(response.status).toBe(200);
-    expect(transactionMock).toHaveBeenCalledOnce();
-    expect(queryMock).toHaveBeenNthCalledWith(3, expect.stringContaining("start_daily_attempt"), [
+    expect(transactionMock).toHaveBeenCalledTimes(2);
+    expect(queryMock).toHaveBeenNthCalledWith(5, expect.stringContaining("start_daily_attempt"), [
       "legacy-device-1234", "2026-01-02", "Ada",
     ]);
   });
 
   it("keeps headerless legacy private status reads working before enforcement", async () => {
     queryMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ exists: false }])
       .mockResolvedValueOnce([{ attempts_used: 1, active_attempt_token: "present" }]);
@@ -239,7 +249,7 @@ describe("Torus Neon compatibility API", () => {
     expect(await response.json()).toEqual([
       { attempts_used: 1, active_attempt_token: "present" },
     ]);
-    expect(queryMock.mock.calls[2][1]).toEqual(["legacy-device-1234", 1]);
+    expect(queryMock.mock.calls[4][1]).toEqual(["legacy-device-1234", 1]);
   });
 
   it("never permits a headerless request for an enrolled owner", async () => {
@@ -399,7 +409,9 @@ describe("Torus Neon compatibility API", () => {
 
 
   it("rejects a headerless enrolled owner before replay simulation", async () => {
-    queryMock.mockResolvedValueOnce([{ exists: true }]);
+    queryMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: true }]);
     const response = await app.request("/functions/v1/verify-score", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -473,6 +485,8 @@ describe("Torus Neon compatibility API", () => {
     queryMock
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ exists: false }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
       .mockResolvedValueOnce([{ result: { accepted: true } }]);
     const response = await app.request("/rest/v1/rpc/start_daily_attempt", {
       method: "POST", headers: { "content-type": "application/json" },
@@ -483,14 +497,18 @@ describe("Torus Neon compatibility API", () => {
       }),
     });
     expect(response.status).toBe(200);
-    expect(transactionMock).toHaveBeenCalledOnce();
+    expect(transactionMock).toHaveBeenCalledTimes(2);
     expect(queryMock.mock.calls.map((call) => call[0])).toEqual([
+      expect.stringContaining("pg_advisory_xact_lock"),
+      expect.stringContaining("installation_credentials"),
       expect.stringContaining("pg_advisory_xact_lock"),
       expect.stringContaining("installation_credentials"),
       expect.stringContaining("start_daily_attempt"),
     ]);
     expect(queryMock.mock.calls[0][1]).toEqual(["legacy-device-1234"]);
     expect(queryMock.mock.calls[1][1]).toEqual(["legacy-device-1234"]);
+    expect(queryMock.mock.calls[2][1]).toEqual(["legacy-device-1234"]);
+    expect(queryMock.mock.calls[3][1]).toEqual(["legacy-device-1234"]);
   });
 
   it("allows only the exact streak leaderboard shape to remain anonymous", async () => {
@@ -513,15 +531,19 @@ describe("Torus Neon compatibility API", () => {
     queryMock
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ exists: false }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }])
       .mockResolvedValueOnce([{ current_streak: 2, max_streak: 4 }]);
     const response = await app.request(
       "/rest/v1/daily_streak_states?select=current_streak,max_streak&client_uuid=eq.legacy-device-1234&limit=1",
     );
     expect(response.status).toBe(200);
-    expect(transactionMock).toHaveBeenCalledOnce();
+    expect(transactionMock).toHaveBeenCalledTimes(2);
     expect(queryMock.mock.calls[0][0]).toContain("pg_advisory_xact_lock");
     expect(queryMock.mock.calls[1][0]).toContain("installation_credentials");
-    expect(queryMock.mock.calls[2][0]).toContain("daily_streak_states");
+    expect(queryMock.mock.calls[2][0]).toContain("pg_advisory_xact_lock");
+    expect(queryMock.mock.calls[3][0]).toContain("installation_credentials");
+    expect(queryMock.mock.calls[4][0]).toContain("daily_streak_states");
   });
 
   it.each([
@@ -557,6 +579,66 @@ describe("Torus Neon compatibility API", () => {
     expect(queryMock).toHaveBeenCalledTimes(2);
     expect(queryMock.mock.calls[1][0]).toContain("SELECT NOT EXISTS");
     expect(queryMock.mock.calls[1][0]).not.toContain("INSERT INTO");
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
+
+  it("commits a rejected legacy rate preflight before skipping the business RPC", async () => {
+    rateLimitMock.mockResolvedValueOnce({ allowed: false, retryAfter: 19 });
+    queryMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ exists: false }]);
+    const response = await app.request("/rest/v1/rpc/start_daily_attempt", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        p_client_uuid: "legacy-device-1234",
+        p_challenge_key: "2026-01-02",
+        p_player_name: "Ada",
+      }),
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("19");
+    expect(transactionMock).toHaveBeenCalledOnce();
+    expect(rateLimitMock).toHaveBeenCalledWith(
+      "startDailyAttempt", "legacy-device-1234", queryMock,
+    );
+    expect(queryMock.mock.calls.some((call) => String(call[0]).includes("start_daily_attempt")))
+      .toBe(false);
+  });
+
+  it("returns stable 429 and Retry-After before parsing enrollment JSON", async () => {
+    process.env.INSTALLATION_ENROLLMENT_ENABLED = "true";
+    rateLimitMock.mockResolvedValueOnce({ allowed: false, retryAfter: 37 });
+    const response = await app.request("/v1/installations/enroll", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{",
+    });
+    expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("37");
+    expect(await response.json()).toEqual({ error: "RATE_LIMITED" });
+    expect(rateLimitMock).toHaveBeenCalledWith("enrollmentGlobal", "all");
+  });
+
+  it("authenticates before charging an authenticated mutation rate bucket", async () => {
+    process.env.INSTALLATION_AUTH_ENFORCED = "true";
+    const response = await app.request("/rest/v1/rpc/start_daily_attempt", {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{",
+    });
+    expect(response.status).toBe(401);
+    expect(rateLimitMock).not.toHaveBeenCalled();
+  });
+
+  it("does not parse or run replay verification after verify rate rejection", async () => {
+    process.env.INSTALLATION_TOKEN_PEPPER = "test-only-pepper";
+    queryMock.mockResolvedValueOnce([credentialRow()]).mockResolvedValueOnce([{ available: true }]);
+    rateLimitMock.mockResolvedValueOnce({ allowed: false, retryAfter: 60 });
+    const response = await app.request("/functions/v1/verify-score", {
+      method: "POST", headers: mutationHeaders(), body: "{",
+    });
+    expect(response.status).toBe(429);
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(queryMock.mock.invocationCallOrder[1]).toBeLessThan(rateLimitMock.mock.invocationCallOrder[0]);
+    expect(replayMock).not.toHaveBeenCalled();
     expect(transactionMock).not.toHaveBeenCalled();
   });
 

@@ -12,6 +12,7 @@ import {
   isInstallationId,
 } from "./installation-auth.js";
 import { type ReplayProof, verifyReplayProof } from "./simulator.js";
+import { consumeRateLimit, type RatePolicyName } from "./rate-limit.js";
 
 const app = new Hono();
 const MAX_BODY_BYTES = 2_000_000;
@@ -46,15 +47,17 @@ app.get("/rest/v1/scores", async (c) => {
   if (installationAuthApplies(c.req.raw)) {
     const auth = await authenticateInstallation(c.req.raw);
     if (!auth.ok || claimed !== auth.clientUuid) throw unauthorized();
+    await enforceRateLimit("privateScores", auth.installationId);
     params.set("client_uuid", `eq.${auth.clientUuid}`);
     const sql = buildScoresQuery(params);
     return c.json(await query(sql.text, sql.values));
   }
 
+  const sql = buildScoresQuery(params);
+  await legacyRatePreflight(c.req.raw, "privateScores", claimed);
   return transaction(async (runQuery) => {
     await lockInstallationOwner(claimed, runQuery);
     if (await ownerHasCredential(claimed, runQuery)) throw unauthorized();
-    const sql = buildScoresQuery(params);
     return c.json(await runQuery(sql.text, sql.values));
   });
 });
@@ -71,15 +74,17 @@ app.get("/rest/v1/daily_streak_states", async (c) => {
   if (installationAuthApplies(c.req.raw)) {
     const auth = await authenticateInstallation(c.req.raw);
     if (!auth.ok || claimed !== auth.clientUuid) throw unauthorized();
+    await enforceRateLimit("privateStreak", auth.installationId);
     params.set("client_uuid", `eq.${auth.clientUuid}`);
     const sql = buildStreakQuery(params);
     return c.json(await query(sql.text, sql.values));
   }
 
+  const sql = buildStreakQuery(params);
+  await legacyRatePreflight(c.req.raw, "privateStreak", claimed);
   return transaction(async (runQuery) => {
     await lockInstallationOwner(claimed, runQuery);
     if (await ownerHasCredential(claimed, runQuery)) throw unauthorized();
-    const sql = buildStreakQuery(params);
     return c.json(await runQuery(sql.text, sql.values));
   });
 });
@@ -91,10 +96,13 @@ app.post("/v1/installations/enroll", async (c) => {
   // enabled. This prevents installations from being claimed before rollout.
   if (!installationEnrollmentEnabled()) return c.json({ error: "NOT_FOUND" }, 404);
 
+  // This shared cap protects body-parsing work and bounds credential row growth.
+  await enforceRateLimit("enrollmentGlobal", "all");
   const body = await readObject(c.req.raw);
   if (!isInstallationId(body.installationId)) {
     throw new HttpError("INVALID_INSTALLATION_ID", 400);
   }
+  await enforceRateLimit("enrollmentInstallation", body.installationId);
   const secret = decodeInstallationSecret(body.secret);
   if (!secret) throw new HttpError("INVALID_INSTALLATION_SECRET", 400);
 
@@ -111,11 +119,12 @@ app.post("/v1/installations/enroll", async (c) => {
 });
 
 app.post("/rest/v1/rpc/start_daily_attempt", async (c) => {
-  await mutationPreflight(c.req.raw);
+  await mutationPreflight(c.req.raw, "startDailyAttempt");
   const body = await readObject(c.req.raw);
   const claimed = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
   const challengeKey = dateKey(body.p_challenge_key);
   const playerName = optionalString(body.p_player_name, 20) ?? "Pending";
+  await legacyRatePreflight(c.req.raw, "startDailyAttempt", claimed);
   const result = await authenticatedMutation(c.req.raw, claimed, (runQuery, owner) =>
     rpc("start_daily_attempt", [owner, challengeKey, playerName], runQuery));
   return c.json(result);
@@ -123,11 +132,13 @@ app.post("/rest/v1/rpc/start_daily_attempt", async (c) => {
 
 for (const name of ["forfeit_daily_attempt", "rollback_daily_attempt"] as const) {
   app.post(`/rest/v1/rpc/${name}`, async (c) => {
-    await mutationPreflight(c.req.raw);
+    await mutationPreflight(c.req.raw, name === "forfeit_daily_attempt" ? "forfeitDailyAttempt" : "rollbackDailyAttempt");
     const body = await readObject(c.req.raw);
     const claimed = requiredString(body.p_client_uuid, "INVALID_CLIENT_UUID", 8, 80);
     const challengeKey = dateKey(body.p_challenge_key);
     const token = requiredString(body.p_attempt_token, "INVALID_ATTEMPT_TOKEN", 1, 256);
+    const policy = name === "forfeit_daily_attempt" ? "forfeitDailyAttempt" : "rollbackDailyAttempt";
+    await legacyRatePreflight(c.req.raw, policy, claimed);
     const result = await authenticatedMutation(c.req.raw, claimed, (runQuery, owner) =>
       rpc(name, [owner, challengeKey, token], runQuery));
     return c.json(result);
@@ -149,10 +160,13 @@ interface VerifyPayload {
 }
 
 app.post("/functions/v1/verify-score", async (c) => {
-  const preflight = await mutationPreflight(c.req.raw);
+  const preflight = await mutationPreflight(c.req.raw, "verifyScore");
   const parsed = validateVerifyPayload(await readObject(c.req.raw));
   if (preflight && parsed.clientUuid !== preflight.clientUuid) throw unauthorized();
-  if (!preflight && await ownerHasCredential(parsed.clientUuid)) throw unauthorized();
+  if (!preflight) {
+    await legacyRatePreflight(c.req.raw, "verifyScore", parsed.clientUuid);
+    if (await ownerHasCredential(parsed.clientUuid)) throw unauthorized();
+  }
 
   const replay = verifyReplayProof(parsed.replayProof);
   if (!replay.ok) {
@@ -225,11 +239,34 @@ async function authenticatedMutation<T>(
   });
 }
 
-async function mutationPreflight(request: Request) {
+async function legacyRatePreflight(
+  request: Request,
+  policy: RatePolicyName,
+  claimedClientUuid: string,
+): Promise<void> {
+  if (installationAuthApplies(request)) return;
+  // Transitional only: this public claimed UUID is spoofable and bypassable.
+  // Commit accounting separately so later business failure cannot refund it.
+  const result = await transaction(async (runQuery) => {
+    await lockInstallationOwner(claimedClientUuid, runQuery);
+    if (await ownerHasCredential(claimedClientUuid, runQuery)) throw unauthorized();
+    return consumeRateLimit(policy, claimedClientUuid, runQuery);
+  });
+  if (!result.allowed) throw new HttpError("RATE_LIMITED", 429, result.retryAfter);
+}
+
+async function mutationPreflight(request: Request, policy: RatePolicyName) {
   if (!installationAuthApplies(request)) return null;
+  // Authenticate first. Otherwise an attacker could charge another installation.
   const auth = await preflightInstallationMutation(request);
   if (!auth.ok) throw unauthorized();
+  await enforceRateLimit(policy, auth.installationId);
   return auth;
+}
+
+async function enforceRateLimit(policy: RatePolicyName, subjectKey: string): Promise<void> {
+  const result = await consumeRateLimit(policy, subjectKey);
+  if (!result.allowed) throw new HttpError("RATE_LIMITED", 429, result.retryAfter);
 }
 
 function isPublicStreakLeaderboard(params: URLSearchParams): boolean {
@@ -331,12 +368,19 @@ function normalizeSkillUsage(raw: SkillUsage[] | undefined): SkillUsage[] {
 }
 
 class HttpError extends Error {
-  constructor(message: string, readonly status: 400 | 401 | 404 | 409 | 413) { super(message); }
+  constructor(
+    message: string,
+    readonly status: 400 | 401 | 404 | 409 | 413 | 429,
+    readonly retryAfter?: number,
+  ) { super(message); }
 }
 
 app.notFound((c) => c.json({ error: "NOT_FOUND" }, 404));
 app.onError((error, c) => {
-  if (error instanceof HttpError) return c.json({ error: error.message }, error.status);
+  if (error instanceof HttpError) {
+    if (error.retryAfter !== undefined) c.header("Retry-After", String(error.retryAfter));
+    return c.json({ error: error.message }, error.status);
+  }
   if (["INVALID_SELECT", "INVALID_LIMIT", "INVALID_FILTER", "INVALID_MODE", "INVALID_ORDER",
     "INVALID_CHALLENGE_KEY", "INVALID_CLIENT_UUID", "INVALID_QUERY_PARAMETER"].includes(error.message)) {
     return c.json({ error: error.message }, 400);
