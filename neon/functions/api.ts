@@ -1,13 +1,19 @@
 import { Hono } from "hono";
 import { query } from "./db.js";
 import { buildScoresQuery, buildStreakQuery } from "./queries.js";
+import {
+  decodeInstallationSecret,
+  enrollInstallation,
+  installationEnrollmentEnabled,
+  isInstallationId,
+} from "./installation-auth.js";
 import { type ReplayProof, verifyReplayProof } from "./simulator.js";
 
 const app = new Hono();
 const MAX_BODY_BYTES = 2_000_000;
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type, x-torus-timestamp, x-torus-request-id",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
 };
 
@@ -33,6 +39,31 @@ app.get("/rest/v1/daily_streak_states", async (c) => {
 });
 
 type JsonObject = Record<string, unknown>;
+
+app.post("/v1/installations/enroll", async (c) => {
+  // Return the same response as an unknown route until enrollment is explicitly
+  // enabled. This prevents installations from being claimed before rollout.
+  if (!installationEnrollmentEnabled()) return c.json({ error: "NOT_FOUND" }, 404);
+
+  const body = await readObject(c.req.raw);
+  if (!isInstallationId(body.installationId)) {
+    throw new HttpError("INVALID_INSTALLATION_ID", 400);
+  }
+  const clientUuid = requiredString(body.clientUuid, "INVALID_CLIENT_UUID", 8, 80);
+  const secret = decodeInstallationSecret(body.secret);
+  if (!secret) throw new HttpError("INVALID_INSTALLATION_SECRET", 400);
+
+  const result = await enrollInstallation(
+    body.installationId.toLowerCase(),
+    clientUuid,
+    secret,
+  );
+  if (result === "conflict") return c.json({ error: "INSTALLATION_CONFLICT" }, 409);
+  return c.json({
+    installationId: body.installationId.toLowerCase(),
+    enrolled: result === "created",
+  }, result === "created" ? 201 : 200);
+});
 
 app.post("/rest/v1/rpc/start_daily_attempt", async (c) => {
   const body = await readObject(c.req.raw);
@@ -185,7 +216,7 @@ function normalizeSkillUsage(raw: SkillUsage[] | undefined): SkillUsage[] {
 }
 
 class HttpError extends Error {
-  constructor(message: string, readonly status: 400 | 413) { super(message); }
+  constructor(message: string, readonly status: 400 | 401 | 404 | 409 | 413) { super(message); }
 }
 
 app.notFound((c) => c.json({ error: "NOT_FOUND" }, 404));

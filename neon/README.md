@@ -19,7 +19,7 @@ npm install
 neon link
 ```
 
-Apply `migrations/0001_initial.sql` through the Neon SQL Editor or `psql` using the branch's unpooled migration connection. Then run:
+Apply the SQL files in `migrations/` in numeric order through the Neon SQL Editor or `psql` using the branch's unpooled migration connection. Then run:
 
 ```sh
 neon dev
@@ -46,3 +46,36 @@ VITE_API_BASE_URL=<torusapi invocation URL without a trailing slash>
 `VITE_API_BASE_URL` is the only public frontend backend setting. It is not a secret. Never put a Neon connection string, `DATABASE_URL`, or database password in a `VITE_*` variable. No secret is declared in `neon.ts`.
 
 The API intentionally keeps the established `/rest/v1/...` and `/functions/v1/verify-score` routes for compatibility with existing server behavior. This public API replaces the prior anonymous backend access. Score writes still require a valid replay, and daily state changes are guarded by attempt tokens in Postgres.
+
+## Installation credentials (rollout foundation)
+
+Migration `0002_installation_credentials.sql` adds server-only installation credentials and consumed request IDs. Direct `PUBLIC` access to both tables is revoked.
+
+Configure `INSTALLATION_TOKEN_PEPPER` as a server secret before using installation authentication. It is required to derive the stored HMAC-SHA256 digest and must not be exposed to clients or placed in a `VITE_*` variable. Credentials and secrets must never be logged. Keep the pepper stable: changing it invalidates all enrolled credentials.
+
+Enrollment is closed by default. `POST /v1/installations/enroll` behaves like an unknown route unless `INSTALLATION_ENROLLMENT_ENABLED=true`. Enable it only during the coordinated client rollout. The JSON request is:
+
+```json
+{
+  "installationId": "123e4567-e89b-42d3-a456-426614174000",
+  "clientUuid": "<existing device UUID>",
+  "secret": "<32 random bytes encoded as unpadded base64url>"
+}
+```
+
+The credential permanently binds the installation ID to the existing device UUID. Repeating the same ID, device UUID, and secret is idempotent. Reusing either identifier with different enrollment data returns `409`. The server stores only `HMAC-SHA256(INSTALLATION_TOKEN_PEPPER, secret)` and never returns the secret.
+
+Authenticated requests use this exact authorization form:
+
+```text
+Authorization: TorusInstall ti1.<installationId>.<secret>
+```
+
+Authenticated state mutations also require a fresh Unix timestamp in whole seconds (within five minutes) and a UUID request ID:
+
+```text
+X-Torus-Timestamp: 1767355200
+X-Torus-Request-Id: 223e4567-e89b-42d3-a456-426614174001
+```
+
+Each `(installationId, requestId)` pair is consumed atomically. Reuse, stale metadata, malformed credentials, and incorrect credentials must all produce the same `401 {"error":"UNAUTHORIZED"}` response. The helpers are implemented for the coordinated rollout, but existing compatibility routes are intentionally not protected yet.

@@ -11,6 +11,68 @@ import app from "./api.js";
 describe("Torus Neon compatibility API", () => {
   beforeEach(() => {
     queryMock.mockReset();
+    delete process.env.INSTALLATION_ENROLLMENT_ENABLED;
+    delete process.env.INSTALLATION_TOKEN_PEPPER;
+  });
+
+  it("hides installation enrollment while the rollout gate is disabled", async () => {
+    const response = await app.request("/v1/installations/enroll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "123e4567-e89b-42d3-a456-426614174000",
+        secret: Buffer.alloc(32, 7).toString("base64url"),
+      }),
+    });
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "NOT_FOUND" });
+    expect(queryMock).not.toHaveBeenCalled();
+  });
+
+  it("creates an installation enrollment without returning its secret", async () => {
+    process.env.INSTALLATION_ENROLLMENT_ENABLED = "true";
+    process.env.INSTALLATION_TOKEN_PEPPER = "test-only-pepper";
+    const installationId = "123e4567-e89b-42d3-a456-426614174000";
+    const clientUuid = "device-12345678";
+    queryMock.mockImplementationOnce(async (_text: string, values: unknown[]) => [
+      { secret_digest: values[2] },
+    ]);
+    const response = await app.request("/v1/installations/enroll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId,
+        clientUuid,
+        secret: Buffer.alloc(32, 7).toString("base64url"),
+      }),
+    });
+    expect(response.status).toBe(201);
+    expect(await response.json()).toEqual({ installationId, enrolled: true });
+    expect(queryMock.mock.calls[0][0]).toContain("ON CONFLICT DO NOTHING");
+    expect(queryMock.mock.calls[0][1]).toEqual([
+      installationId,
+      clientUuid,
+      expect.any(Buffer),
+    ]);
+  });
+
+  it("returns 409 when an installation id is enrolled with a different secret", async () => {
+    process.env.INSTALLATION_ENROLLMENT_ENABLED = "true";
+    process.env.INSTALLATION_TOKEN_PEPPER = "test-only-pepper";
+    queryMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ secret_digest: Buffer.alloc(32, 1) }]);
+    const response = await app.request("/v1/installations/enroll", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        installationId: "123e4567-e89b-42d3-a456-426614174000",
+        clientUuid: "device-12345678",
+        secret: Buffer.alloc(32, 7).toString("base64url"),
+      }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "INSTALLATION_CONFLICT" });
   });
 
   it("reports database-backed health", async () => {
