@@ -353,6 +353,27 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "touches the host OS credential vault"]
+    fn os_credential_vault_round_trip() {
+        let account = format!("smoke:{}", Uuid::new_v4());
+        let vault = OsCredentialVault {
+            account: account.clone(),
+        };
+        let mut expected = CredentialRecord::generate();
+        expected.enrolled = true;
+        vault.store(&expected).unwrap();
+        let loaded = vault.load().unwrap().unwrap();
+        assert_eq!(loaded.installation_id, expected.installation_id);
+        assert_eq!(loaded.secret, expected.secret);
+        assert!(loaded.enrolled);
+        keyring::Entry::new(VAULT_SERVICE, &account)
+            .unwrap()
+            .delete_credential()
+            .unwrap();
+        assert!(vault.load().unwrap().is_none());
+    }
+
+    #[test]
     fn generated_credentials_have_uuid_v4_and_32_byte_secret() {
         let value = CredentialRecord::generate();
         assert_eq!(
